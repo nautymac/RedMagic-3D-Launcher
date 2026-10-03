@@ -1,0 +1,11 @@
+.gradle/
+build/
+local.properties
+keystore.properties
+*.jks
+# Leia CNSDK 커넥터 — 기기(CalibrationK68)에서 꺼낸 것이라 재배포 불가
+app/libs/leia-cnsdk*.jar
+app/src/main/jniLibs/
+# CNSDK 셰이더·버전 파일도 기기에서 꺼낸 Leia 것이라 넣지 않는다 (DepthFlix 와 같음)
+app/src/main/assets/shaders/
+app/src/main/assets/cnsdk.version
