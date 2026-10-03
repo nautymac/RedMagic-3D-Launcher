@@ -34,6 +34,23 @@ public class App extends Application {
         prefs(c).edit().putBoolean(pkg + ".sbs", sbs).putFloat(pkg + ".gain", gain).apply();
     }
 
+    static boolean isFavorite(Context c, String pkg) {
+        return prefs(c).getBoolean(pkg + ".fav", false);
+    }
+
+    static void setFavorite(Context c, String pkg, boolean fav) {
+        prefs(c).edit().putBoolean(pkg + ".fav", fav).apply();
+    }
+
+    /** 앱 선택 화면에서 즐겨찾기만 보일지. */
+    static boolean favoritesOnly(Context c) {
+        return prefs(c).getBoolean("view.favoritesOnly", false);
+    }
+
+    static void setFavoritesOnly(Context c, boolean on) {
+        prefs(c).edit().putBoolean("view.favoritesOnly", on).apply();
+    }
+
     static void saveGain(Context c, String pkg, float gain) {
         prefs(c).edit().putFloat(pkg + ".gain", gain).apply();
     }

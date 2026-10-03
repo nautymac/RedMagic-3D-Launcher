@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,6 +35,14 @@ public final class Helper {
     private static final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private static volatile IHelper service;
     private static boolean binding;
+    private static long bindStart;
+    /** 이만큼 지나도 연결이 안 되면 막힌 것으로 본다. 정상이면 1초 안에 붙는다. */
+    static final long STALE_MS = 8000;
+
+    /** 연결을 시도한 지 오래됐는지 (Shizuku 앱을 한 번 열어야 할 수 있다). */
+    public static boolean slow() {
+        return binding && SystemClock.uptimeMillis() - bindStart >= STALE_MS;
+    }
 
     private static final Shizuku.UserServiceArgs ARGS = new Shizuku.UserServiceArgs(
             new ComponentName(BuildConfig.APPLICATION_ID, HelperService.class.getName()))
@@ -99,8 +108,20 @@ public final class Helper {
             State s = state();
             if (s == State.NO_PERMISSION) {
                 if (!Shizuku.shouldShowRequestPermissionRationale()) Shizuku.requestPermission(PERMISSION_REQUEST);
-            } else if (s == State.CONNECTING && !binding) {
+            } else if (s == State.CONNECTING) {
+                // 도우미는 뜰 때 Shizuku 앱의 provider 로 자기를 알린다. 최근 앱 "모두 지우기" 로
+                // Shizuku 앱이 강제 종료돼 있으면 그 단계에서 막히고, Shizuku 는 30초 뒤 포기한다
+                // (실기 로그: "provider is null moe.shizuku.privileged.api.shizuku").
+                // 그러면 연결 콜백이 영영 오지 않으므로, 오래 걸린 시도는 버리고 다시 띄운다.
+                if (binding && SystemClock.uptimeMillis() - bindStart < STALE_MS) {
+                    notifyState();
+                    return;
+                }
+                if (binding) {
+                    try { Shizuku.unbindUserService(ARGS, conn, true); } catch (Throwable ignored) { }
+                }
                 binding = true;
+                bindStart = SystemClock.uptimeMillis();
                 try {
                     Shizuku.bindUserService(ARGS, conn);
                 } catch (Throwable t) {

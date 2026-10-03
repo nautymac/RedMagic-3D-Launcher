@@ -37,6 +37,10 @@ public class MainActivity extends Activity implements Helper.Listener {
     private TextView status;
     private Button action;
     private GridView grid;
+    private Button favToggle;
+    private TextView empty;
+    private final List<Entry> allApps = new ArrayList<>();
+    /** 지금 격자에 보이는 앱 (즐겨찾기만 보기면 즐겨찾기만). */
     private final List<Entry> apps = new ArrayList<>();
 
     private static final class Entry {
@@ -60,6 +64,14 @@ public class MainActivity extends Activity implements Helper.Listener {
         bar.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         action = new Button(this);
         bar.addView(action);
+        favToggle = new Button(this);
+        favToggle.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                App.setFavoritesOnly(MainActivity.this, !App.favoritesOnly(MainActivity.this));
+                refresh();
+            }
+        });
+        bar.addView(favToggle);
         root.addView(bar);
 
         grid = new GridView(this);
@@ -70,6 +82,11 @@ public class MainActivity extends Activity implements Helper.Listener {
         grid.setPadding(0, pad, 0, pad);
         grid.setClipToPadding(false);
         root.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        empty = new TextView(this);
+        empty.setGravity(Gravity.CENTER);
+        empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        root.addView(empty, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        grid.setEmptyView(empty);
         setContentView(root);
 
         grid.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -90,13 +107,26 @@ public class MainActivity extends Activity implements Helper.Listener {
         super.onResume();
         Helper.addListener(this);
         Helper.connect();
+        retry.run();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         Helper.removeListener(this);
+        ui.removeCallbacks(retry);
     }
+
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    /** 연결되기 전까지 2초마다 다시 시도한다 (Shizuku 를 켜고 돌아온 경우, 막힌 시도 다시 띄우기). */
+    private final Runnable retry = new Runnable() {
+        @Override public void run() {
+            if (Helper.get() != null) return;
+            Helper.connect();
+            ui.postDelayed(this, 2000);
+        }
+    };
 
     @Override
     public void onHelperState(Helper.State s) {
@@ -122,8 +152,17 @@ public class MainActivity extends Activity implements Helper.Listener {
                 });
                 break;
             case CONNECTING:
-                status.setText("도우미 연결 중…");
-                action.setVisibility(View.GONE);
+                if (Helper.slow()) {
+                    // 최근 앱 "모두 지우기" 로 Shizuku 앱이 꺼지면 도우미가 연결을 못 한다.
+                    status.setText("도우미 연결이 늦어지고 있습니다. Shizuku 앱을 한 번 열었다가 돌아오세요.");
+                    action.setText("Shizuku 열기");
+                    action.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) { Helper.openShizuku(MainActivity.this); }
+                    });
+                } else {
+                    status.setText("도우미 연결 중…");
+                    action.setVisibility(View.GONE);
+                }
                 break;
             case READY:
                 status.setText("준비됨 — 앱을 누르면 3D 로 실행합니다. 길게 누르면 설정.");
@@ -134,7 +173,8 @@ public class MainActivity extends Activity implements Helper.Listener {
 
     private void start(Entry e) {
         if (Helper.get() == null) {
-            Toast.makeText(this, "도우미가 연결되지 않았습니다", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "도우미가 아직 연결되지 않았습니다 — 위쪽 안내를 확인하세요", Toast.LENGTH_SHORT).show();
+            Helper.connect();
             return;
         }
         startActivity(new Intent(this, ViewActivity.class)
@@ -158,6 +198,10 @@ public class MainActivity extends Activity implements Helper.Listener {
         mode.addView(mono);
         mode.addView(sbs);
         mode.check(App.isSbs(this, e.pkg) ? sbs.getId() : mono.getId());
+        final android.widget.CheckBox fav = new android.widget.CheckBox(this);
+        fav.setText("즐겨찾기");
+        fav.setChecked(App.isFavorite(this, e.pkg));
+        box.addView(fav);
         box.addView(mode);
 
         final TextView depthLabel = new TextView(this);
@@ -184,13 +228,16 @@ public class MainActivity extends Activity implements Helper.Listener {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         App.save(MainActivity.this, e.pkg, mode.getCheckedRadioButtonId() == sbs.getId(),
                                 0.1f + depth.getProgress() * 0.05f);
-                        ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
+                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
+                        refresh();
                     }
                 })
                 .setNeutralButton("3D 로 실행", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         App.save(MainActivity.this, e.pkg, mode.getCheckedRadioButtonId() == sbs.getId(),
                                 0.1f + depth.getProgress() * 0.05f);
+                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
+                        refresh();
                         start(e);
                     }
                 })
@@ -217,11 +264,26 @@ public class MainActivity extends Activity implements Helper.Listener {
                 @Override public int compare(Entry a, Entry b) { return col.compare(a.label, b.label); }
             });
             runOnUiThread(new Runnable() { @Override public void run() {
-                apps.clear();
-                apps.addAll(list);
+                allApps.clear();
+                allApps.addAll(list);
                 grid.setAdapter(new Adapter());
+                refresh();
             }});
         }}, "load-apps").start();
+    }
+
+    /** 보기(전체/즐겨찾기만)에 맞춰 격자를 다시 채운다. */
+    private void refresh() {
+        boolean favOnly = App.favoritesOnly(this);
+        favToggle.setText(favOnly ? "전체 보기" : "즐겨찾기만");
+        empty.setText(favOnly
+                ? "즐겨찾기가 없습니다.\n\"전체 보기\" 에서 앱을 길게 눌러 즐겨찾기에 넣으세요."
+                : "앱 목록을 불러오는 중…");
+        apps.clear();
+        for (Entry e : allApps) {
+            if (!favOnly || App.isFavorite(this, e.pkg)) apps.add(e);
+        }
+        if (grid.getAdapter() != null) ((BaseAdapter) grid.getAdapter()).notifyDataSetChanged();
     }
 
     private final class Adapter extends BaseAdapter {
@@ -242,7 +304,8 @@ public class MainActivity extends Activity implements Helper.Listener {
             Drawable d = e.icon;
             d.setBounds(0, 0, dp(56), dp(56));
             t.setCompoundDrawables(null, d, null, null);
-            t.setText(App.isSbs(MainActivity.this, e.pkg) ? e.label + "\n(SBS)" : e.label);
+            String label = App.isFavorite(MainActivity.this, e.pkg) ? "★ " + e.label : e.label;
+            t.setText(App.isSbs(MainActivity.this, e.pkg) ? label + "\n(SBS)" : label);
             return t;
         }
     }
