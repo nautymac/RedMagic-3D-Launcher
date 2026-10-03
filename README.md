@@ -1,5 +1,7 @@
 # 3D 런처 — Red Magic 3D 태블릿용
 
+**한국어** | [English](README.en.md)
+
 ![3D Launcher](docs/banner.jpg)
 
 **설치된 아무 앱이나 안경 없는 3D 로 실행합니다.** 게임, 유튜브 등 일반 2D 앱을 기기의 Leia 2D→3D 엔진으로 변환해
@@ -9,8 +11,7 @@
 - 루팅 필요 없음. 대신 **Shizuku** 앱이 필요합니다 (아래 설명).
 - 기기 내장 "3D 모드" 보다 3D 품질이 좋고 끊김이 적습니다 (실기 비교).
 
-> English summary: Runs any Android app in glasses-free 3D on the Red Magic 3D Explorer tablet (NP02J).
-> Install Shizuku, start it via wireless debugging, allow 3D Launcher in Shizuku, then tap an app.
+> English guide: [README.en.md](README.en.md)
 
 ---
 
