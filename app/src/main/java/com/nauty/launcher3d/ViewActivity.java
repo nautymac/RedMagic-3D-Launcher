@@ -69,6 +69,16 @@ public class ViewActivity extends Activity {
     private volatile boolean sdkReady = false;
     private boolean wantActive = false;
 
+    // 얼굴추적기는 공유 서비스라 켜 달라고 해도 바로 안 올 수 있다(직전 앱이 놓는 중). 그래서
+    // 3D 가 켜지면 SDK 가 "돌고 있다"고 할 때까지 몇 번 다시 요청하고, 그 뒤로는 시청자 위치를
+    // 가끔 로그에 남긴다. 위빙이 얼굴을 따라가는지는 화면이 아니라 로그로 확인한다.
+    private static final int TRACKER_ATTEMPTS = 5;
+    private static final long TRACKER_RETRY_MS = 400;
+    private static final int FACE_SAMPLES_FAST = 10;
+    private int trackerAttempt;
+    private int faceSamples;
+    private boolean viewerAnnounced;
+
     private volatile Object monoEngine;
     private Surface monoIn;
 
@@ -400,7 +410,53 @@ public class ViewActivity extends Activity {
         } catch (Throwable t) {
             Log.e(TAG, "백라이트 전환 실패", t);
         }
+        if (wantActive) {
+            ui.removeCallbacks(trackerWatch);
+            trackerAttempt = 0;
+            faceSamples = 0;
+            viewerAnnounced = false;
+            ui.postDelayed(trackerWatch, TRACKER_RETRY_MS);
+        } else {
+            ui.removeCallbacks(trackerWatch);
+        }
     }
+
+    private final Runnable trackerWatch = new Runnable() {
+        @Override public void run() {
+            if (destroyed || sdk == null || !sdkReady || !wantActive) return;
+            try {
+                if (!sdk.isFaceTrackingStarted()) {
+                    trackerAttempt++;
+                    // enable 은 준비, start 는 실행. 기본 시점으로 위빙된 화면은 추적기를 아예 안 켠
+                    // 것과 똑같이 보이므로 둘 다 명시적으로 부른다.
+                    sdk.enableFaceTracking(true);
+                    sdk.startFaceTracking(true);
+                    boolean started = sdk.isFaceTrackingStarted();
+                    Log.i(TAG, "얼굴추적기 " + (started ? "시작됨" : "아직 안 돎") + " (시도 " + trackerAttempt + "/" + TRACKER_ATTEMPTS + ")");
+                    if (!started) {
+                        if (trackerAttempt < TRACKER_ATTEMPTS) ui.postDelayed(this, TRACKER_RETRY_MS);
+                        else {
+                            Log.w(TAG, "얼굴추적기가 시작되지 않음 — 기본 시점으로 위빙");
+                            Toast.makeText(ViewActivity.this, "눈 추적 사용 불가", Toast.LENGTH_SHORT).show();
+                        }
+                        return;
+                    }
+                }
+                com.leia.core.Vector3 face = sdk.getPrimaryFace();
+                boolean seen = face != null && (face.x != 0f || face.y != 0f || face.z != 0f);
+                faceSamples++;
+                Log.i(TAG, "시청자 " + (seen ? face.x + "," + face.y + "," + face.z : "안 보임") + " (표본 " + faceSamples + ")");
+                if (seen && !viewerAnnounced) {
+                    viewerAnnounced = true;
+                    Toast.makeText(ViewActivity.this, "눈 추적 동작 중", Toast.LENGTH_SHORT).show();
+                }
+                // 처음엔 1초마다, 자리 잡은 뒤엔 10초마다.
+                ui.postDelayed(this, faceSamples < FACE_SAMPLES_FAST ? 1000 : 10000);
+            } catch (Throwable t) {
+                Log.w(TAG, "얼굴추적기 확인 실패: " + t);
+            }
+        }
+    };
 
     @Override
     protected void onResume() {
