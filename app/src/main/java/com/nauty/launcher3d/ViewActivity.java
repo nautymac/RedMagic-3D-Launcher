@@ -78,6 +78,17 @@ public class ViewActivity extends Activity {
     private int trackerAttempt;
     private int faceSamples;
     private boolean viewerAnnounced;
+    private boolean trackerReasked;
+
+    // 추적기는 별도 시스템 서비스이고, Android 는 앞에 있는 앱이 카메라 권리를 빌려줄 때만 서비스가
+    // 카메라를 쓰게 한다. CNSDK 가 거는 바인딩(BIND_AUTO_CREATE|BIND_IMPORTANT)엔 그게 없어서,
+    // 서비스가 포그라운드로 갈 때의 상태에 따라 카메라가 "disabled by policy" 로 거부되곤 했다
+    // (프로세스가 갓 뜬 직후엔 거부, 오래 살아 있으면 성공). 그래서 3D 가 켜져 있는 동안 이 앱이
+    // 카메라 권리를 넘겨주는 바인딩(BIND_INCLUDE_CAPABILITIES)을 하나 더 쥐고 있는다.
+    private static final String TRACKER_PACKAGE = "com.leia.headtrackingservice";
+    private static final String TRACKER_SERVICE = "com.leia.headtrackingservice.HeadTrackingService";
+    private static final int FACE_SAMPLES_BEFORE_REASK = 4;
+    private android.content.ServiceConnection trackerLease;
 
     private volatile Object monoEngine;
     private Surface monoIn;
@@ -404,6 +415,7 @@ public class ViewActivity extends Activity {
 
     private void applyActive() {
         if (sdk == null || !sdkReady) return;
+        lendCameraToTracker(wantActive);
         try {
             sdk.enableFaceTracking(wantActive);
             sdk.enableBacklight(wantActive);
@@ -415,9 +427,38 @@ public class ViewActivity extends Activity {
             trackerAttempt = 0;
             faceSamples = 0;
             viewerAnnounced = false;
+            trackerReasked = false;
             ui.postDelayed(trackerWatch, TRACKER_RETRY_MS);
         } else {
             ui.removeCallbacks(trackerWatch);
+        }
+    }
+
+    /** 추적 서비스에 이 앱의 카메라 권리를 넘겨주는 바인딩을 쥐거나 놓는다. 바인더 자체는 쓰지 않는다. */
+    private void lendCameraToTracker(boolean hold) {
+        if (hold) {
+            if (trackerLease != null) return;
+            android.content.ServiceConnection lease = new android.content.ServiceConnection() {
+                @Override public void onServiceConnected(android.content.ComponentName n, android.os.IBinder b) {
+                    Log.i(TAG, "추적 서비스에 카메라 권리 넘겨줌(바인딩 유지)");
+                }
+                @Override public void onServiceDisconnected(android.content.ComponentName n) {
+                    Log.w(TAG, "3D 중에 추적 서비스가 사라짐");
+                }
+            };
+            try {
+                android.content.Intent i = new android.content.Intent();
+                i.setClassName(TRACKER_PACKAGE, TRACKER_SERVICE);
+                int flags = android.content.Context.BIND_AUTO_CREATE | android.content.Context.BIND_IMPORTANT
+                        | android.content.Context.BIND_INCLUDE_CAPABILITIES;
+                if (bindService(i, lease, flags)) trackerLease = lease;
+                else { Log.w(TAG, "추적 서비스 바인딩 실패"); try { unbindService(lease); } catch (Throwable ignored) { } }
+            } catch (Throwable t) {
+                Log.w(TAG, "추적 서비스 바인딩 실패: " + t);
+            }
+        } else if (trackerLease != null) {
+            try { unbindService(trackerLease); } catch (Throwable ignored) { }
+            trackerLease = null;
         }
     }
 
@@ -450,6 +491,14 @@ public class ViewActivity extends Activity {
                     viewerAnnounced = true;
                     Toast.makeText(ViewActivity.this, "눈 추적 동작 중", Toast.LENGTH_SHORT).show();
                 }
+                // 돌고는 있는데 한참 아무도 안 보이면 보통 카메라가 안 열린 것(서비스는 거부되면 재시도 안 함).
+                // 한 번 더 요청하면 서비스의 포그라운드 세션이 위 바인딩 아래서 새로 시작된다.
+                if (!seen && !viewerAnnounced && !trackerReasked && faceSamples >= FACE_SAMPLES_BEFORE_REASK) {
+                    trackerReasked = true;
+                    Log.w(TAG, faceSamples + "초 동안 시청자 없음 — 카메라 거부 가능성, 추적기 재요청");
+                    sdk.enableFaceTracking(false);
+                    sdk.enableFaceTracking(true);
+                }
                 // 처음엔 1초마다, 자리 잡은 뒤엔 10초마다.
                 ui.postDelayed(this, faceSamples < FACE_SAMPLES_FAST ? 1000 : 10000);
             } catch (Throwable t) {
@@ -481,6 +530,7 @@ public class ViewActivity extends Activity {
         super.onDestroy();
         destroyed = true;
         ui.removeCallbacksAndMessages(null);
+        lendCameraToTracker(false);
         // 디스플레이를 먼저 없앤다 — 앱이 우리 입력면에 그리는 것을 멈추고, 앱 화면도 닫힌다.
         IHelper h = Helper.get();
         if (h != null && displayId >= 0) {
