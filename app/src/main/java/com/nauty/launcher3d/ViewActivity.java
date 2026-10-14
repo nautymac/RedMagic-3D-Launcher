@@ -32,6 +32,7 @@ import com.leia.sdk.views.InterlacedSurfaceViewConfigAccessor;
 import com.leia.sdk.views.ScaleType;
 import com.leiainc.leiamediasdk.LeiaMediaSDK;
 import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
+import com.leiainc.leiamediasdk.interfaces.ReconvergenceMode;
 import com.leiainc.leiamediasdk.interfaces.StereoVideoSurfaceRenderer;
 
 /**
@@ -193,6 +194,9 @@ public class ViewActivity extends Activity {
                 return;
             }
             try { stereoEngine.setAutoConvergence(true); } catch (Throwable ignored) { }
+            // 기본값(zoomXAndY)은 수렴을 옮길 때 가장자리를 가리려고 확대해서, 장면마다 화면이
+            // 커졌다 작아졌다 했다. 확대 없이 수렴만 다시 잡는다.
+            try { stereoEngine.setReconvergenceMode(ReconvergenceMode.noZoom); } catch (Throwable ignored) { }
             Log.i(TAG, "스테레오 엔진 생성");
         }}, "l3d-stereo").start();
     }
