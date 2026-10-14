@@ -32,13 +32,15 @@ import com.leia.sdk.views.InterlacedSurfaceViewConfigAccessor;
 import com.leia.sdk.views.ScaleType;
 import com.leiainc.leiamediasdk.LeiaMediaSDK;
 import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
+import com.leiainc.leiamediasdk.interfaces.StereoVideoSurfaceRenderer;
 
 /**
  * 3D 화면. 고른 앱을 신뢰된 가상 디스플레이에 띄우고, 그 화면을 3D 로 위빙한다.
  *
  * <pre>
  * [2D 모드] 앱 ──▶ 가상 디스플레이 1920x1200 = 엔진 입력면 ──▶ Leia 2D→3D 엔진 ──▶ CNSDK 입력면 ──▶ 위빙
- * [SBS 모드] 앱 ──▶ 가상 디스플레이 3840x1200 = CNSDK 입력면 ─────────────────────────────▶ 위빙
+ * [SBS 모드] 앱 ──▶ 가상 디스플레이 3840x1200 = 엔진 입력면 ──▶ Leia 스테레오 엔진(수렴 재조정) ──▶ CNSDK 입력면 ──▶ 위빙
+ *            (스테레오 엔진을 못 쓰면 가상 디스플레이를 CNSDK 입력면에 바로 붙여 예전처럼 위빙)
  * 화면 터치 ──▶ 디스플레이 좌표로 변환 ──▶ 도우미 ──▶ injectInputEvent(displayId)
  * </pre>
  * 위빙·엔진 연결은 DepthFlix 데모(VdSpikeActivity)를 그대로 옮긴 것이다.
@@ -71,6 +73,8 @@ public class ViewActivity extends Activity {
 
     private volatile Object monoEngine;
     private Surface monoIn;
+    private volatile StereoVideoSurfaceRenderer stereoEngine;
+    private Surface stereoIn;
 
     private volatile int displayId = -1;
     private volatile boolean destroyed;
@@ -115,7 +119,7 @@ public class ViewActivity extends Activity {
             @Override public void onSurfaceTextureReady(SurfaceTexture st) {
                 st.setDefaultBufferSize(FRAME_W, FRAME_H);
                 out = new Surface(st);
-                if (sbs) startDisplay(out, FRAME_W, FRAME_H);
+                if (sbs) startStereo();
                 else startMono();
             }
         });
@@ -155,6 +159,42 @@ public class ViewActivity extends Activity {
             try { ((MonoVideoSurfaceRenderer) monoEngine).setGainMultiplier(gain); } catch (Throwable ignored) { }
             Log.i(TAG, "2D→3D 엔진 생성 gain " + gain);
         }}, "l3d-mono").start();
+    }
+
+    // --- SBS 모드: Leia 스테레오 엔진(이미 있는 좌우 눈의 수렴을 장면마다 다시 잡음) ---
+
+    /**
+     * SBS 를 그대로 위빙하면 원본 시차가 이 패널엔 너무 커서 고개를 움직일 때 좌우가 떨리고
+     * 겹쳐 보인다 — 얼굴추적이 안 되는 것처럼 느껴진다. 2D→3D 엔진은 시차를 작게 만들고 장면마다
+     * 다시 잡아서 이 증상이 없었다. 스테레오 엔진은 같은 재조정을 진짜 SBS 에 해 준다(LeiaPlayer 가
+     * SBS 영상에 쓰는 것). 출력은 그대로 2타일이라 CNSDK 설정은 바꿀 게 없다.
+     * 엔진을 못 쓰면 예전처럼 CNSDK 입력면에 바로 붙인다.
+     */
+    private void startStereo() {
+        new Thread(new Runnable() { @Override public void run() {
+            LeiaMediaSDK media = LeiaMediaSDK.getInstance(ViewActivity.this);
+            android.content.Context svc = media == null ? null : LeiaMediaSDK.serviceContext(ViewActivity.this);
+            if (svc == null) {
+                Log.w(TAG, "스테레오 엔진 없음 — SBS 를 그대로 위빙");
+                startDisplay(out, FRAME_W, FRAME_H);
+                return;
+            }
+            stereoEngine = media.createStereoVideoSurfaceRenderer(svc, out,
+                    new StereoVideoSurfaceRenderer.SurfaceTextureCallback() {
+                        @Override public void onSurfaceTextureReady(SurfaceTexture st) {
+                            st.setDefaultBufferSize(FRAME_W, FRAME_H);
+                            stereoIn = new Surface(st);
+                            startDisplay(stereoIn, FRAME_W, FRAME_H);
+                        }
+                    });
+            if (stereoEngine == null) {
+                Log.w(TAG, "스테레오 엔진 생성 실패 — SBS 를 그대로 위빙");
+                startDisplay(out, FRAME_W, FRAME_H);
+                return;
+            }
+            try { stereoEngine.setAutoConvergence(true); } catch (Throwable ignored) { }
+            Log.i(TAG, "스테레오 엔진 생성");
+        }}, "l3d-stereo").start();
     }
 
     // --- 가상 디스플레이 + 앱 실행 (도우미가 한다) ---
@@ -436,6 +476,11 @@ public class ViewActivity extends Activity {
             monoEngine = null;
         }
         if (monoIn != null) { monoIn.release(); monoIn = null; }
+        if (stereoEngine != null) {
+            try { stereoEngine.release(); } catch (Throwable ignored) { }
+            stereoEngine = null;
+        }
+        if (stereoIn != null) { stereoIn.release(); stereoIn = null; }
         if (leiaView != null) {
             try { leiaView.releaseInputViewsAsset(); } catch (Throwable ignored) { }
         }
