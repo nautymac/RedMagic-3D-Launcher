@@ -47,7 +47,7 @@ import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
  * 갈아 끼우면 되고, 앱은 크기 변화를 겪지 않아 그대로 돈다. SBS 는 한 화면에 좌우를 담는
  * 절반 폭 SBS(눈당 960x1200)로 받는다 — SBS 영상과 에뮬레이터의 기본 출력이 이 형식이다.
  *
- * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 화면 가장자리를 쓸어 시스템 바를 꺼내면
+ * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 화면 위쪽에서 끌어내리거나 세 손가락으로 터치하면
  * 위에 도구 막대(나가기·모드·깊이·눈 추적 상태)가 잠깐 나온다. 이 화면을 나가면 디스플레이를
  * 없애고, 그 위의 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
  */
@@ -111,6 +111,13 @@ public class ViewActivity extends Activity {
     private Button modeButton, minus, plus;
     private TextView gainText, trackText;
     private boolean touchToToolbar;
+    /** 세 손가락 터치로 막대를 연 동작. 손가락이 다 떨어질 때까지 앱에 보내지 않는다. */
+    private boolean menuGesture;
+    /** 위쪽 이 높이 안에서 시작해 이만큼 끌어내리면 막대를 연다. */
+    private static final int PULL_ZONE_DP = 48;
+    private static final int PULL_DISTANCE_DP = 80;
+    private boolean pullDown;
+    private float pullStartY;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -318,13 +325,12 @@ public class ViewActivity extends Activity {
      */
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            touchToToolbar = false;
-            if (toolbar.getVisibility() == View.VISIBLE) {
-                Rect r = new Rect();
-                toolbar.getGlobalVisibleRect(r);
-                touchToToolbar = r.contains((int) ev.getRawX(), (int) ev.getRawY());
-            }
+        int action = ev.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            touchToToolbar = hits(toolbar, ev);
+            menuGesture = false;
+            pullDown = ev.getY() < dp(PULL_ZONE_DP);
+            pullStartY = ev.getY();
         }
         if (touchToToolbar) {
             scheduleHideToolbar();
@@ -333,9 +339,33 @@ public class ViewActivity extends Activity {
         IHelper h = Helper.get();
         View v = leiaView;
         if (h == null || displayId < 0 || v.getWidth() == 0 || v.getHeight() == 0) return true;
+        // 막대를 여는 두 가지: 화면 위쪽에서 한 손가락으로 아래로 끌어내리기, 세 손가락 터치.
+        // 시스템 바를 쓸어 꺼내는 방법은 앱이 포커스를 가져가면 안 통한다(실기: DroidDeck 이 가상
+        // 디스플레이에서 포커스를 쥐자 이 화면에 알림이 안 옴). 그래서 터치를 직접 본다.
+        // 앱에는 이미 보낸 터치를 취소로 끝내 주고, 나머지는 손가락이 다 떨어질 때까지 삼킨다.
+        if (action == MotionEvent.ACTION_POINTER_DOWN) pullDown = false;
+        boolean pulled = pullDown && action == MotionEvent.ACTION_MOVE
+                && ev.getY() - pullStartY > dp(PULL_DISTANCE_DP);
+        boolean threeFingers = action == MotionEvent.ACTION_POINTER_DOWN && ev.getPointerCount() >= 3;
+        if (!menuGesture && (pulled || threeFingers)) {
+            menuGesture = true;
+            pullDown = false;
+            MotionEvent cancel = MotionEvent.obtain(ev);
+            cancel.setAction(MotionEvent.ACTION_CANCEL);
+            inject(h, cancel, v);
+            if (threeFingers && toolbar.getVisibility() == View.VISIBLE) ui.post(hideToolbar);
+            else showToolbar();
+            return true;
+        }
+        if (menuGesture) return true;
+        inject(h, MotionEvent.obtain(ev), v);
+        return true;
+    }
+
+    /** 터치를 디스플레이 좌표로 바꿔 보낸다. e 는 여기서 recycle 한다. */
+    private void inject(IHelper h, MotionEvent e, View v) {
         float sx = (sbs ? DISPLAY_W / 2f : DISPLAY_W) / v.getWidth();
         float sy = (float) FRAME_H / v.getHeight();
-        MotionEvent e = MotionEvent.obtain(ev);
         Matrix m = new Matrix();
         m.setScale(sx, sy);
         e.transform(m);
@@ -346,7 +376,12 @@ public class ViewActivity extends Activity {
         } finally {
             e.recycle();
         }
-        return true;
+    }
+
+    private static boolean hits(View v, MotionEvent ev) {
+        if (v == null || v.getVisibility() != View.VISIBLE) return false;
+        Rect r = new Rect();
+        return v.getGlobalVisibleRect(r) && r.contains((int) ev.getRawX(), (int) ev.getRawY());
     }
 
     /** 뒤로 제스처·버튼은 앱에 넘긴다. 나가기는 도구 막대에서. */

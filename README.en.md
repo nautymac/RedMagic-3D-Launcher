@@ -54,7 +54,7 @@ you're set.
 | Change per-app settings | **Long-press** the app: favorite (즐겨찾기), 2D→3D conversion or SBS, depth (깊이) |
 | Show only favorites | Use the **즐겨찾기만 / 전체 보기** (Favorites only / Show all) button at the top |
 | Go back inside the app | Use the back gesture as usual |
-| Switch mode, adjust depth or exit | Swipe in from a screen edge to reveal the system bars. A bar with **나가기** (Exit), **모드** (Mode), **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top |
+| Switch mode, adjust depth or exit | **Pull down from near the top of the screen with one finger, or touch with three fingers.** A bar with **나가기** (Exit), **모드** (Mode), **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top and closes by itself after 4 seconds |
 
 - Leaving the 3D screen closes the app too. If the app closes itself, the 3D screen closes as well.
 - If the app is already running when you launch it, it is closed and started fresh.
