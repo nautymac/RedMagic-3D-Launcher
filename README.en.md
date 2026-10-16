@@ -54,11 +54,13 @@ you're set.
 | Change per-app settings | **Long-press** the app: favorite (즐겨찾기), 2D→3D conversion or SBS, depth (깊이) |
 | Show only favorites | Use the **즐겨찾기만 / 전체 보기** (Favorites only / Show all) button at the top |
 | Go back inside the app | Use the back gesture as usual |
-| Adjust depth or exit | Swipe in from a screen edge to reveal the system bars. A bar with **나가기** (Exit) and **깊이 − +** (Depth) appears at the top |
+| Switch mode, adjust depth or exit | Swipe in from a screen edge to reveal the system bars. A bar with **나가기** (Exit), **모드** (Mode), **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top |
 
 - Leaving the 3D screen closes the app too. If the app closes itself, the 3D screen closes as well.
 - If the app is already running when you launch it, it is closed and started fresh.
-- **SBS mode**: for apps that draw a left/right image pair themselves (such as an emulator's SBS output), choose "SBS" in that app's settings.
+- **SBS mode**: for apps that draw a left/right image pair themselves (SBS videos, an emulator's SBS output), tap **모드** (Mode) in the 3D screen's bar. The app keeps running, and the choice is remembered for next time.
+  The picture is read as half-width SBS (both eyes squeezed into one frame).
+- **Eye tracking** works in both modes. The bar's **눈 추적** label shows its state: 동작 중 (working), 얼굴 안 보임 (no face found) or 사용 불가 (unavailable).
 
 ## After a reboot
 Pairing and permissions stay. Just **turn on Wireless debugging → tap Start in Shizuku**.

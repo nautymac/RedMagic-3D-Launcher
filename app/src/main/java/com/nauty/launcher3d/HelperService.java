@@ -91,6 +91,21 @@ public class HelperService extends IHelper.Stub {
     }
 
     @Override
+    public void setSurface(int displayId, final Surface surface) {
+        final VirtualDisplay vd;
+        synchronized (displays) { vd = displays.get(displayId); }
+        if (vd == null) return;
+        try {
+            onMain(new Callable<Void>() {
+                @Override public Void call() { vd.setSurface(surface); return null; }
+            });
+            Log.i(TAG, "디스플레이 " + displayId + " 출력면 " + (surface == null ? "뗌" : "바꿈"));
+        } catch (Throwable t) {
+            Log.e(TAG, "출력면 교체 실패", t);
+        }
+    }
+
+    @Override
     public void releaseDisplay(int displayId) {
         VirtualDisplay vd;
         synchronized (displays) {

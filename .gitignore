@@ -9,3 +9,4 @@ app/src/main/jniLibs/
 # CNSDK 셰이더·버전 파일도 기기에서 꺼낸 Leia 것이라 넣지 않는다 (DepthFlix 와 같음)
 app/src/main/assets/shaders/
 app/src/main/assets/cnsdk.version
+build-*.log

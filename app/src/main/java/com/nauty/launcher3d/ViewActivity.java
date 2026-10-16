@@ -37,15 +37,19 @@ import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
  * 3D 화면. 고른 앱을 신뢰된 가상 디스플레이에 띄우고, 그 화면을 3D 로 위빙한다.
  *
  * <pre>
- * [2D 모드] 앱 ──▶ 가상 디스플레이 1920x1200 = 엔진 입력면 ──▶ Leia 2D→3D 엔진 ──▶ CNSDK 입력면 ──▶ 위빙
- * [SBS 모드] 앱 ──▶ 가상 디스플레이 3840x1200 = CNSDK 입력면 ─────────────────────────────▶ 위빙
+ * [2D 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ 엔진 입력면 ──▶ Leia 2D→3D 엔진 ──▶ CNSDK 입력면 ──▶ 위빙
+ * [SBS 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ CNSDK 입력면 ────────────────────────────▶ 위빙
  * 화면 터치 ──▶ 디스플레이 좌표로 변환 ──▶ 도우미 ──▶ injectInputEvent(displayId)
  * </pre>
  * 위빙·엔진 연결은 DepthFlix 데모(VdSpikeActivity)를 그대로 옮긴 것이다.
  *
+ * 디스플레이 크기는 두 모드가 같다. 그래서 실행 중에 모드를 바꿀 때 디스플레이의 출력면만
+ * 갈아 끼우면 되고, 앱은 크기 변화를 겪지 않아 그대로 돈다. SBS 는 한 화면에 좌우를 담는
+ * 절반 폭 SBS(눈당 960x1200)로 받는다 — SBS 영상과 에뮬레이터의 기본 출력이 이 형식이다.
+ *
  * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 화면 가장자리를 쓸어 시스템 바를 꺼내면
- * 위에 도구 막대(나가기·깊이)가 잠깐 나온다. 이 화면을 나가면 디스플레이를 없애고, 그 위의
- * 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
+ * 위에 도구 막대(나가기·모드·깊이·눈 추적 상태)가 잠깐 나온다. 이 화면을 나가면 디스플레이를
+ * 없애고, 그 위의 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
  */
 public class ViewActivity extends Activity {
 
@@ -53,9 +57,15 @@ public class ViewActivity extends Activity {
     static final String EXTRA_LABEL = "label";
 
     private static final String TAG = "L3D";
-    private static final int FRAME_W = 3840;   // 두 눈. 눈당 1920x1200 = 패널과 같은 16:10
+    private static final int FRAME_W = 3840;   // CNSDK 입력: 두 눈. 눈당 1920x1200 = 패널과 같은 16:10
     private static final int FRAME_H = 1200;
+    private static final int DISPLAY_W = FRAME_W / 2;   // 가상 디스플레이: 두 모드 공통
     private static final int DPI = 240;
+
+    /** 모드 전환(엔진 해제·생성, 출력면 교체)을 한 줄로 세운다. 엔진 생성이 1초쯤 블록한다. */
+    private final java.util.concurrent.ExecutorService pipeline =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private volatile boolean switching;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -79,6 +89,7 @@ public class ViewActivity extends Activity {
     private int faceSamples;
     private boolean viewerAnnounced;
     private boolean trackerReasked;
+    private boolean lastSeen;
 
     // 추적기는 별도 시스템 서비스이고, Android 는 앞에 있는 앱이 카메라 권리를 빌려줄 때만 서비스가
     // 카메라를 쓰게 한다. CNSDK 가 거는 바인딩(BIND_AUTO_CREATE|BIND_IMPORTANT)엔 그게 없어서,
@@ -97,7 +108,8 @@ public class ViewActivity extends Activity {
     private volatile boolean destroyed;
 
     private LinearLayout toolbar;
-    private TextView gainText;
+    private Button modeButton, minus, plus;
+    private TextView gainText, trackText;
     private boolean touchToToolbar;
 
     @Override
@@ -136,8 +148,10 @@ public class ViewActivity extends Activity {
             @Override public void onSurfaceTextureReady(SurfaceTexture st) {
                 st.setDefaultBufferSize(FRAME_W, FRAME_H);
                 out = new Surface(st);
-                if (sbs) startDisplay(out, FRAME_W, FRAME_H);
-                else startMono();
+                pipeline.execute(new Runnable() { @Override public void run() {
+                    if (sbs) attach(out);
+                    else if (!buildMono()) fail("Leia 2D→3D 엔진을 쓸 수 없습니다");
+                }});
             }
         });
         leiaView.setViewAsset(asset);
@@ -156,48 +170,108 @@ public class ViewActivity extends Activity {
     // --- 2D 모드: Leia 2D→3D 엔진(기기의 신경망 변환기) ---
 
     /**
-     * 엔진 입력면을 눈 하나 크기(1920x1200)로 받아 그것을 가상 디스플레이 화면으로 쓴다.
-     * 엔진은 시차를 만들어 2타일 SBS 로 CNSDK 입력면에 그린다. 생성이 1초쯤 블록한다.
+     * 엔진을 CNSDK 입력면 위에 만들고, 그 입력면(눈 하나 크기 1920x1200)을 디스플레이에 붙인다.
+     * 엔진은 시차를 만들어 2타일 SBS 로 CNSDK 입력면에 그린다. pipeline 스레드에서만 부른다.
      */
-    private void startMono() {
-        new Thread(new Runnable() { @Override public void run() {
-            LeiaMediaSDK media = LeiaMediaSDK.getInstance(ViewActivity.this);
-            android.content.Context svc = media == null ? null : LeiaMediaSDK.serviceContext(ViewActivity.this);
-            if (svc == null) { fail("Leia 2D→3D 엔진을 쓸 수 없습니다"); return; }
-            monoEngine = media.createMonoVideoSurfaceRenderer(svc, out,
-                    new MonoVideoSurfaceRenderer.SurfaceTextureCallback() {
-                        @Override public void onSurfaceTextureReady(SurfaceTexture st) {
-                            st.setDefaultBufferSize(FRAME_W / 2, FRAME_H);
-                            monoIn = new Surface(st);
-                            startDisplay(monoIn, FRAME_W / 2, FRAME_H);
-                        }
-                    });
-            if (monoEngine == null) { fail("2D→3D 엔진 생성 실패"); return; }
-            try { ((MonoVideoSurfaceRenderer) monoEngine).setGainMultiplier(gain); } catch (Throwable ignored) { }
-            Log.i(TAG, "2D→3D 엔진 생성 gain " + gain);
-        }}, "l3d-mono").start();
+    private boolean buildMono() {
+        LeiaMediaSDK media = LeiaMediaSDK.getInstance(this);
+        android.content.Context svc = media == null ? null : LeiaMediaSDK.serviceContext(this);
+        if (svc == null) return false;
+        final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+        Object engine = media.createMonoVideoSurfaceRenderer(svc, out,
+                new MonoVideoSurfaceRenderer.SurfaceTextureCallback() {
+                    @Override public void onSurfaceTextureReady(SurfaceTexture st) {
+                        st.setDefaultBufferSize(DISPLAY_W, FRAME_H);
+                        monoIn = new Surface(st);
+                        ready.countDown();
+                    }
+                });
+        if (engine == null) return false;
+        monoEngine = engine;
+        try { ((MonoVideoSurfaceRenderer) engine).setGainMultiplier(gain); } catch (Throwable ignored) { }
+        try { ready.await(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
+        if (monoIn == null) return false;
+        Log.i(TAG, "2D→3D 엔진 생성 gain " + gain);
+        attach(monoIn);
+        return true;
+    }
+
+    /** 엔진을 내린다. 그 전에 디스플레이를 엔진 입력면에서 떼어 둔다. pipeline 스레드에서만 부른다. */
+    private void dropMono() {
+        IHelper h = Helper.get();
+        if (h != null && displayId >= 0) {
+            try { h.setSurface(displayId, null); } catch (Throwable ignored) { }
+        }
+        Object e = monoEngine;
+        monoEngine = null;
+        if (e != null) {
+            try { ((MonoVideoSurfaceRenderer) e).release(); } catch (Throwable ignored) { }
+        }
+        if (monoIn != null) { monoIn.release(); monoIn = null; }
     }
 
     // --- 가상 디스플레이 + 앱 실행 (도우미가 한다) ---
 
-    private void startDisplay(final Surface s, final int w, final int h) {
-        new Thread(new Runnable() { @Override public void run() {
-            IHelper h2 = Helper.get();
-            if (h2 == null) { fail("도우미 연결이 끊겼습니다"); return; }
-            try {
-                int id = h2.createDisplay(s, w, h, DPI);
-                if (id < 0) { fail("가상 디스플레이를 만들지 못했습니다"); return; }
-                displayId = id;
-                if (destroyed) { h2.releaseDisplay(id); return; }
-                String err = h2.launch(component, id);
-                if (err != null) { fail("실행 실패: " + err); return; }
-                Log.i(TAG, component + " → 디스플레이 " + id);
-                ui.postDelayed(watch, 4000);
-            } catch (Throwable t) {
-                Log.e(TAG, "디스플레이/실행 실패", t);
-                fail("도우미 오류: " + t.getMessage());
+    /** 디스플레이가 없으면 만들고 앱을 실행한다. 있으면 출력면만 바꾼다. pipeline 스레드에서만 부른다. */
+    private void attach(Surface s) {
+        IHelper h = Helper.get();
+        if (h == null) { fail("도우미 연결이 끊겼습니다"); return; }
+        try {
+            if (displayId >= 0) {
+                h.setSurface(displayId, s);
+                return;
             }
-        }}, "l3d-display").start();
+            int id = h.createDisplay(s, DISPLAY_W, FRAME_H, DPI);
+            if (id < 0) { fail("가상 디스플레이를 만들지 못했습니다"); return; }
+            displayId = id;
+            if (destroyed) { h.releaseDisplay(id); return; }
+            String err = h.launch(component, id);
+            if (err != null) { fail("실행 실패: " + err); return; }
+            Log.i(TAG, component + " → 디스플레이 " + id);
+            ui.postDelayed(watch, 4000);
+        } catch (Throwable t) {
+            Log.e(TAG, "디스플레이/실행 실패", t);
+            fail("도우미 오류: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 실행 중에 2D→3D 와 SBS 를 바꾼다. 앱은 그대로 두고 디스플레이의 출력면만 갈아 끼운다.
+     * 엔진과 디스플레이가 CNSDK 입력면을 동시에 쥘 수 없어서(한 면에 생산자는 하나), 항상
+     * 먼저 떼고 나서 붙인다.
+     */
+    private void toggleMode() {
+        if (switching || out == null || displayId < 0) return;
+        switching = true;
+        final boolean toSbs = !sbs;
+        modeButton.setEnabled(false);
+        pipeline.execute(new Runnable() { @Override public void run() {
+            boolean ok;
+            if (toSbs) {
+                dropMono();
+                attach(out);
+                ok = true;
+            } else {
+                IHelper h = Helper.get();
+                if (h != null) { try { h.setSurface(displayId, null); } catch (Throwable ignored) { } }
+                ok = buildMono();
+                if (!ok) attach(out);   // 엔진이 안 되면 SBS 로 남는다
+            }
+            final boolean done = ok;
+            ui.post(new Runnable() { @Override public void run() {
+                if (done) {
+                    sbs = toSbs;
+                    App.save(ViewActivity.this, pkg, sbs, gain);
+                    Log.i(TAG, "모드 전환 → " + (sbs ? "SBS" : "2D→3D"));
+                } else {
+                    Toast.makeText(ViewActivity.this, "2D→3D 엔진을 만들지 못했습니다", Toast.LENGTH_SHORT).show();
+                }
+                switching = false;
+                modeButton.setEnabled(true);
+                showMode();
+                scheduleHideToolbar();
+            }});
+        }});
     }
 
     /** 앱이 끝나 디스플레이가 비면 이 화면도 닫는다. 두 번 연속 비어 있어야 닫는다. */
@@ -238,9 +312,9 @@ public class ViewActivity extends Activity {
     /**
      * 화면 터치를 가상 디스플레이 좌표로 바꿔 도우미에게 보낸다.
      *
-     * 화면(2560x1600)과 디스플레이 한 눈(1920x1200)은 같은 16:10 이고 FIT_CENTER 로 꽉 차므로
-     * 배율 하나로 맞는다. SBS 모드면 디스플레이는 두 눈 폭이지만 앱은 왼쪽 절반에 대응하므로
-     * 같은 배율로 왼쪽 눈 좌표가 된다.
+     * 화면(2560x1600)과 디스플레이(1920x1200)는 같은 16:10 이고 FIT_CENTER 로 꽉 차므로
+     * 2D→3D 에선 배율 하나로 맞는다. SBS 에선 보이는 그림이 디스플레이 왼쪽 절반(왼눈)을
+     * 가로로 두 배 늘린 것이므로, 가로만 절반으로 줄여 왼눈 좌표로 보낸다.
      */
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
@@ -258,11 +332,12 @@ public class ViewActivity extends Activity {
         }
         IHelper h = Helper.get();
         View v = leiaView;
-        if (h == null || displayId < 0 || v.getWidth() == 0) return true;
-        float s = (FRAME_W / 2f) / v.getWidth();
+        if (h == null || displayId < 0 || v.getWidth() == 0 || v.getHeight() == 0) return true;
+        float sx = (sbs ? DISPLAY_W / 2f : DISPLAY_W) / v.getWidth();
+        float sy = (float) FRAME_H / v.getHeight();
         MotionEvent e = MotionEvent.obtain(ev);
         Matrix m = new Matrix();
-        m.setScale(s, s);
+        m.setScale(sx, sy);
         e.transform(m);
         try {
             h.injectMotion(e, displayId);
@@ -306,26 +381,51 @@ public class ViewActivity extends Activity {
         });
         toolbar.addView(exit);
 
-        if (!sbs) {
-            Button minus = new Button(this);
-            minus.setText("깊이 −");
-            minus.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { setGain(gain - 0.05f); }
-            });
-            gainText = new TextView(this);
-            gainText.setTextColor(Color.WHITE);
-            gainText.setPadding(pad * 2, 0, pad * 2, 0);
-            Button plus = new Button(this);
-            plus.setText("깊이 +");
-            plus.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { setGain(gain + 0.05f); }
-            });
-            toolbar.addView(minus);
-            toolbar.addView(gainText);
-            toolbar.addView(plus);
-            showGain();
-        }
+        modeButton = new Button(this);
+        modeButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleMode(); }
+        });
+        toolbar.addView(modeButton);
+
+        minus = new Button(this);
+        minus.setText("깊이 −");
+        minus.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { setGain(gain - 0.05f); }
+        });
+        gainText = new TextView(this);
+        gainText.setTextColor(Color.WHITE);
+        gainText.setPadding(pad * 2, 0, pad * 2, 0);
+        plus = new Button(this);
+        plus.setText("깊이 +");
+        plus.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { setGain(gain + 0.05f); }
+        });
+        toolbar.addView(minus);
+        toolbar.addView(gainText);
+        toolbar.addView(plus);
+
+        trackText = new TextView(this);
+        trackText.setTextColor(Color.WHITE);
+        trackText.setPadding(pad * 2, 0, pad, 0);
+        trackText.setText("눈 추적: 확인 중");
+        toolbar.addView(trackText);
+
+        showGain();
+        showMode();
         return toolbar;
+    }
+
+    /** 모드 버튼은 지금 모드를 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
+    private void showMode() {
+        modeButton.setText(sbs ? "모드: SBS" : "모드: 2D→3D");
+        int depth = sbs ? View.GONE : View.VISIBLE;
+        minus.setVisibility(depth);
+        gainText.setVisibility(depth);
+        plus.setVisibility(depth);
+    }
+
+    private void showTracking(String s) {
+        if (trackText != null) trackText.setText("눈 추적: " + s);
     }
 
     private void setGain(float g) {
@@ -475,9 +575,12 @@ public class ViewActivity extends Activity {
                     boolean started = sdk.isFaceTrackingStarted();
                     Log.i(TAG, "얼굴추적기 " + (started ? "시작됨" : "아직 안 돎") + " (시도 " + trackerAttempt + "/" + TRACKER_ATTEMPTS + ")");
                     if (!started) {
-                        if (trackerAttempt < TRACKER_ATTEMPTS) ui.postDelayed(this, TRACKER_RETRY_MS);
-                        else {
+                        if (trackerAttempt < TRACKER_ATTEMPTS) {
+                            showTracking("시작 중");
+                            ui.postDelayed(this, TRACKER_RETRY_MS);
+                        } else {
                             Log.w(TAG, "얼굴추적기가 시작되지 않음 — 기본 시점으로 위빙");
+                            showTracking("사용 불가");
                             Toast.makeText(ViewActivity.this, "눈 추적 사용 불가", Toast.LENGTH_SHORT).show();
                         }
                         return;
@@ -486,7 +589,12 @@ public class ViewActivity extends Activity {
                 com.leia.core.Vector3 face = sdk.getPrimaryFace();
                 boolean seen = face != null && (face.x != 0f || face.y != 0f || face.z != 0f);
                 faceSamples++;
-                Log.i(TAG, "시청자 " + (seen ? face.x + "," + face.y + "," + face.z : "안 보임") + " (표본 " + faceSamples + ")");
+                showTracking(seen ? "동작 중" : "얼굴 안 보임");
+                // 자리 잡은 뒤에는 상태가 바뀌거나 열 번에 한 번만 남긴다.
+                if (faceSamples < FACE_SAMPLES_FAST || seen != lastSeen || faceSamples % 10 == 0)
+                    Log.i(TAG, "시청자 " + (seen ? face.x + "," + face.y + "," + face.z : "안 보임")
+                            + " (표본 " + faceSamples + ", " + (sbs ? "SBS" : "2D→3D") + ")");
+                lastSeen = seen;
                 if (seen && !viewerAnnounced) {
                     viewerAnnounced = true;
                     Toast.makeText(ViewActivity.this, "눈 추적 동작 중", Toast.LENGTH_SHORT).show();
@@ -499,8 +607,8 @@ public class ViewActivity extends Activity {
                     sdk.enableFaceTracking(false);
                     sdk.enableFaceTracking(true);
                 }
-                // 처음엔 1초마다, 자리 잡은 뒤엔 10초마다.
-                ui.postDelayed(this, faceSamples < FACE_SAMPLES_FAST ? 1000 : 10000);
+                // 처음엔 1초마다, 자리 잡은 뒤엔 3초마다 (도구 막대의 표시가 너무 늦지 않게).
+                ui.postDelayed(this, faceSamples < FACE_SAMPLES_FAST ? 1000 : 3000);
             } catch (Throwable t) {
                 Log.w(TAG, "얼굴추적기 확인 실패: " + t);
             }
@@ -537,6 +645,7 @@ public class ViewActivity extends Activity {
             try { h.releaseDisplay(displayId); } catch (Throwable ignored) { }
         }
         displayId = -1;
+        pipeline.shutdownNow();
         if (monoEngine != null) {
             try { ((MonoVideoSurfaceRenderer) monoEngine).release(); } catch (Throwable ignored) { }
             monoEngine = null;

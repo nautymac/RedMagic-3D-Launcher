@@ -25,4 +25,7 @@ interface IHelper {
 
     /** 디스플레이에 남은 태스크 수. 알 수 없으면 -1. */
     int taskCount(int displayId) = 6;
+
+    /** 디스플레이의 화면(출력면)을 바꾼다. null 이면 떼어 낸다. 앱은 그대로 돈다. */
+    void setSurface(int displayId, in Surface surface) = 7;
 }
