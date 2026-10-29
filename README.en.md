@@ -51,14 +51,16 @@ you're set.
 | To | Do this |
 |---|---|
 | Run an app in 3D | Tap it in the list |
-| Change per-app settings | **Long-press** the app: favorite (즐겨찾기), 2D→3D conversion or SBS, depth (깊이) |
+| Change per-app settings | **Long-press** the app: favorite (즐겨찾기), depth (깊이) |
 | Show only favorites | Use the **즐겨찾기만 / 전체 보기** (Favorites only / Show all) button at the top |
 | Go back inside the app | Use the back gesture as usual |
-| Switch mode, adjust depth or exit | **Pull down from near the top of the screen with one finger, or touch with three fingers.** A bar with **나가기** (Exit), **모드** (Mode), **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top and closes by itself after 4 seconds |
+| Watch an SBS video in 3D (YouTube etc.) | **Touch with three fingers** in the 3D screen. Touch again to go back to 2D→3D conversion |
+| Adjust depth or exit | **Pull down from near the top of the screen with one finger.** A bar with **나가기** (Exit), the current mode, **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top and closes by itself after 4 seconds |
 
 - Leaving the 3D screen closes the app too. If the app closes itself, the 3D screen closes as well.
 - If the app is already running when you launch it, it is closed and started fresh.
-- **SBS mode**: for apps that draw a left/right image pair themselves (SBS videos, an emulator's SBS output), tap **모드** (Mode) in the 3D screen's bar. The app keeps running, and the choice is remembered for next time.
+- **2D→3D or SBS**: the 3D screen always starts in 2D→3D (live conversion).
+  When an app shows an SBS video, as YouTube does, touch with three fingers to switch to SBS 3D. The app keeps running.
   The picture is read as half-width SBS (both eyes squeezed into one frame).
 - **Eye tracking** works in both modes. The bar's **눈 추적** label shows its state: 동작 중 (working), 얼굴 안 보임 (no face found) or 사용 불가 (unavailable).
 
@@ -88,7 +90,7 @@ Android turns Wireless debugging off on every reboot, which is a limit of unroot
 - `ViewActivity`: the 3D screen.
   ```
   [2D]  app ─▶ virtual display 1920x1200 = engine input ─▶ Leia 2D→3D engine ─▶ CNSDK input ─▶ weaving
-  [SBS] app ─▶ virtual display 3840x1200 = CNSDK input ───────────────────────────────────▶ weaving
+  [SBS] app ─▶ virtual display 1920x1200 = CNSDK input (split in two, stretched) ──────────▶ weaving
   touch ─▶ mapped to display coordinates ─▶ helper ─▶ injectInputEvent(displayId)
   ```
   The 2D-to-3D engine is the device's `com.leiainc.media.service`, loaded with DexClassLoader (`LeiaMediaSDK.java`).

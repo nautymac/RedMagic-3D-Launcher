@@ -37,18 +37,21 @@ import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
  * 3D 화면. 고른 앱을 신뢰된 가상 디스플레이에 띄우고, 그 화면을 3D 로 위빙한다.
  *
  * <pre>
- * [2D 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ 엔진 입력면 ──▶ Leia 2D→3D 엔진 ──▶ CNSDK 입력면 ──▶ 위빙
- * [SBS 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ CNSDK 입력면 ────────────────────────────▶ 위빙
+ * [2D 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ 엔진 입력면 ──▶ Leia 2D→3D 엔진 ──▶ CNSDK 입력면 3840x1200 ──▶ 위빙
+ * [SBS 모드] 앱 ──▶ 가상 디스플레이 1920x1200 ──▶ CNSDK 입력면 1920x1200 ──────────────────────▶ 위빙
  * 화면 터치 ──▶ 디스플레이 좌표로 변환 ──▶ 도우미 ──▶ injectInputEvent(displayId)
  * </pre>
  * 위빙·엔진 연결은 DepthFlix 데모(VdSpikeActivity)를 그대로 옮긴 것이다.
  *
- * 디스플레이 크기는 두 모드가 같다. 그래서 실행 중에 모드를 바꿀 때 디스플레이의 출력면만
- * 갈아 끼우면 되고, 앱은 크기 변화를 겪지 않아 그대로 돈다. SBS 는 한 화면에 좌우를 담는
- * 절반 폭 SBS(눈당 960x1200)로 받는다 — SBS 영상과 에뮬레이터의 기본 출력이 이 형식이다.
+ * 3D 화면은 늘 2D 모드로 시작하고, 세 손가락 터치로 SBS 모드를 켜고 끈다. 디스플레이 크기는
+ * 두 모드가 같다. 그래서 실행 중에 모드를 바꿀 때 디스플레이의 출력면만 갈아 끼우면 되고, 앱은
+ * 크기 변화를 겪지 않아 그대로 돈다. SBS 는 한 화면에 좌우를 담는 절반 폭 SBS(눈당 960x1200)로
+ * 받는다 — SBS 영상과 에뮬레이터의 기본 출력이 이 형식이다. 화면 전체를 나누므로 앱의 UI 도 같이 나뉜다.
+ * (영상 영역만 나누는 합성기를 0.1.15~0.1.18 시험판으로 만들었다가 쓰지 않기로 했다.)
  *
- * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 화면 위쪽에서 끌어내리거나 세 손가락으로 터치하면
- * 위에 도구 막대(나가기·모드·깊이·눈 추적 상태)가 잠깐 나온다. 이 화면을 나가면 디스플레이를
+ * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 세 손가락 터치는 SBS 3D 를 켜고 끈다(유튜브의 SBS
+ * 영상 등). 화면 위쪽에서 끌어내리면 위에 도구 막대(나가기·모드·깊이·눈 추적 상태)가 잠깐 나온다.
+ * 이 화면을 나가면 디스플레이를
  * 없애고, 그 위의 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
  */
 public class ViewActivity extends Activity {
@@ -75,7 +78,7 @@ public class ViewActivity extends Activity {
 
     private LeiaSDK sdk;
     private InterlacedSurfaceView leiaView;
-    private Surface out;
+    private volatile Surface out;
     private volatile boolean sdkReady = false;
     private boolean wantActive = false;
 
@@ -108,10 +111,10 @@ public class ViewActivity extends Activity {
     private volatile boolean destroyed;
 
     private LinearLayout toolbar;
-    private Button modeButton, minus, plus;
-    private TextView gainText, trackText;
+    private Button minus, plus;
+    private TextView modeText, gainText, trackText;
     private boolean touchToToolbar;
-    /** 세 손가락 터치로 막대를 연 동작. 손가락이 다 떨어질 때까지 앱에 보내지 않는다. */
+    /** 막대를 열거나 모드를 바꾼 동작. 손가락이 다 떨어질 때까지 앱에 보내지 않는다. */
     private boolean menuGesture;
     /** 위쪽 이 높이 안에서 시작해 이만큼 끌어내리면 막대를 연다. */
     private static final int PULL_ZONE_DP = 48;
@@ -129,7 +132,6 @@ public class ViewActivity extends Activity {
             return;
         }
         pkg = component.substring(0, component.indexOf('/'));
-        sbs = App.isSbs(this, pkg);
         gain = App.gain(this, pkg);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -156,22 +158,56 @@ public class ViewActivity extends Activity {
                 st.setDefaultBufferSize(FRAME_W, FRAME_H);
                 out = new Surface(st);
                 pipeline.execute(new Runnable() { @Override public void run() {
-                    if (sbs) attach(out);
-                    else if (!buildMono()) fail("Leia 2D→3D 엔진을 쓸 수 없습니다");
+                    if (!buildMono()) fail("Leia 2D→3D 엔진을 쓸 수 없습니다");
                 }});
             }
         });
         leiaView.setViewAsset(asset);
+        configure(false);
 
+        initSdk();
+        Toast.makeText(this, "세 손가락 터치: SBS 3D 켜기/끄기 · 위에서 끌어내리기: 메뉴", Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * 2D→3D: 엔진이 3840x1200 에 두 눈(눈당 1920x1200)을 그린다.
+     * SBS: 디스플레이(1920x1200)가 입력면에 그대로 그리고, CNSDK 가 그것을 두 칸(눈당 960x1200)으로
+     * 나눠 화면 가득 늘린다(FILL = 늘리기). 디스플레이를 3840 입력면에 붙이면 늘어나지 않고 왼쪽
+     * 절반에만 그려져서 오른눈이 비었다(실기, SurfaceFlinger content=1920x1200 / buffer 3840x1200).
+     */
+    private void configure(boolean sbsInput) {
         try (InterlacedSurfaceViewConfigAccessor c = leiaView.getConfig()) {
-            c.setSourceSize(FRAME_W, FRAME_H);
+            c.setSourceSize(sbsInput ? DISPLAY_W : FRAME_W, FRAME_H);
             c.setNumTiles(2, 1);
-            c.setScaleType(ScaleType.FIT_CENTER);
+            c.setScaleType(sbsInput ? ScaleType.FILL : ScaleType.FIT_CENTER);
         } catch (Throwable t) {
             Log.e(TAG, "config 설정 실패", t);
         }
+    }
 
-        initSdk();
+    /**
+     * CNSDK 입력면을 새로 만들어 끼우고 그 Surface 를 돌려준다. 이전 입력면은 SDK 가 닫는다
+     * (InterlacedRenderer.setInputViewsAsset 이 옛 asset 을 close 한다). pipeline 스레드에서만 부른다.
+     */
+    private Surface freshInput(final boolean sbsInput) {
+        final int w = sbsInput ? DISPLAY_W : FRAME_W;
+        final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+        final Surface[] got = new Surface[1];
+        final InputViewsAsset asset = new InputViewsAsset();
+        asset.CreateEmptySurfaceForVideo(w, FRAME_H, new SurfaceTextureReadyCallback() {
+            @Override public void onSurfaceTextureReady(SurfaceTexture st) {
+                st.setDefaultBufferSize(w, FRAME_H);
+                got[0] = new Surface(st);
+                ready.countDown();
+            }
+        });
+        ui.post(new Runnable() { @Override public void run() {
+            if (destroyed) return;
+            leiaView.setViewAsset(asset);
+            configure(sbsInput);
+        }});
+        try { ready.await(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
+        return got[0];
     }
 
     // --- 2D 모드: Leia 2D→3D 엔진(기기의 신경망 변환기) ---
@@ -197,7 +233,11 @@ public class ViewActivity extends Activity {
         monoEngine = engine;
         try { ((MonoVideoSurfaceRenderer) engine).setGainMultiplier(gain); } catch (Throwable ignored) { }
         try { ready.await(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
-        if (monoIn == null) return false;
+        if (monoIn == null) {
+            monoEngine = null;
+            try { ((MonoVideoSurfaceRenderer) engine).release(); } catch (Throwable ignored) { }
+            return false;
+        }
         Log.i(TAG, "2D→3D 엔진 생성 gain " + gain);
         attach(monoIn);
         return true;
@@ -243,40 +283,45 @@ public class ViewActivity extends Activity {
     }
 
     /**
-     * 실행 중에 2D→3D 와 SBS 를 바꾼다. 앱은 그대로 두고 디스플레이의 출력면만 갈아 끼운다.
-     * 엔진과 디스플레이가 CNSDK 입력면을 동시에 쥘 수 없어서(한 면에 생산자는 하나), 항상
-     * 먼저 떼고 나서 붙인다.
+     * 실행 중에 2D→3D 와 SBS 를 바꾼다(세 손가락 터치). 앱은 그대로 두고 디스플레이의 출력면만
+     * 갈아 끼운다. 3D 화면은 늘 2D→3D 로 시작하고, SBS 는 이 전환으로만 켠다.
+     *
+     * 0.1.12 까지는 CNSDK 입력면 하나를 엔진과 디스플레이가 번갈아 쥐었는데, 앞쪽의 연결이
+     * 비동기로 풀리기 전에 뒤쪽이 붙으면(한 면에 생산자는 하나) 그림이 안 바뀌었다(실기).
+     * 그래서 전환마다 입력면을 새로 만들어, 새 생산자는 항상 빈 면에 붙는다.
      */
     private void toggleMode() {
         if (switching || out == null || displayId < 0) return;
         switching = true;
         final boolean toSbs = !sbs;
-        modeButton.setEnabled(false);
+        Toast.makeText(this, toSbs ? "SBS 3D 켜는 중…" : "SBS 3D 끄는 중…", Toast.LENGTH_SHORT).show();
         pipeline.execute(new Runnable() { @Override public void run() {
-            boolean ok;
-            if (toSbs) {
-                dropMono();
-                attach(out);
-                ok = true;
-            } else {
+            if (toSbs) dropMono();   // 디스플레이를 떼고 엔진을 내린다
+            else {
                 IHelper h = Helper.get();
                 if (h != null) { try { h.setSurface(displayId, null); } catch (Throwable ignored) { } }
-                ok = buildMono();
-                if (!ok) attach(out);   // 엔진이 안 되면 SBS 로 남는다
             }
-            final boolean done = ok;
+            Surface old = out;
+            Surface fresh = freshInput(toSbs);
+            if (fresh == null) { fail("3D 입력면을 다시 만들지 못했습니다"); return; }
+            out = fresh;
+            if (old != null) old.release();
+            boolean ok;
+            if (toSbs) {
+                attach(fresh);
+                ok = true;
+            } else {
+                ok = buildMono();
+                if (!ok) fail("2D→3D 엔진을 만들지 못했습니다");
+            }
+            if (!ok) return;
             ui.post(new Runnable() { @Override public void run() {
-                if (done) {
-                    sbs = toSbs;
-                    App.save(ViewActivity.this, pkg, sbs, gain);
-                    Log.i(TAG, "모드 전환 → " + (sbs ? "SBS" : "2D→3D"));
-                } else {
-                    Toast.makeText(ViewActivity.this, "2D→3D 엔진을 만들지 못했습니다", Toast.LENGTH_SHORT).show();
-                }
+                sbs = toSbs;
+                Log.i(TAG, "모드 전환 → " + (sbs ? "SBS" : "2D→3D"));
+                Toast.makeText(ViewActivity.this, sbs ? "SBS 3D 켜짐" : "SBS 3D 꺼짐 — 2D→3D 변환",
+                        Toast.LENGTH_SHORT).show();
                 switching = false;
-                modeButton.setEnabled(true);
                 showMode();
-                scheduleHideToolbar();
             }});
         }});
     }
@@ -339,9 +384,10 @@ public class ViewActivity extends Activity {
         IHelper h = Helper.get();
         View v = leiaView;
         if (h == null || displayId < 0 || v.getWidth() == 0 || v.getHeight() == 0) return true;
-        // 막대를 여는 두 가지: 화면 위쪽에서 한 손가락으로 아래로 끌어내리기, 세 손가락 터치.
-        // 시스템 바를 쓸어 꺼내는 방법은 앱이 포커스를 가져가면 안 통한다(실기: DroidDeck 이 가상
-        // 디스플레이에서 포커스를 쥐자 이 화면에 알림이 안 옴). 그래서 터치를 직접 본다.
+        // 화면 위쪽에서 한 손가락으로 아래로 끌어내리면 막대를 연다. 시스템 바를 쓸어 꺼내는
+        // 방법은 앱이 포커스를 가져가면 안 통한다(실기: DroidDeck 이 가상 디스플레이에서 포커스를
+        // 쥐자 이 화면에 알림이 안 옴). 그래서 터치를 직접 본다.
+        // 세 손가락 터치는 SBS 3D 를 켜고 끈다 — 유튜브의 SBS 영상처럼 앱 안에서 SBS 가 나올 때.
         // 앱에는 이미 보낸 터치를 취소로 끝내 주고, 나머지는 손가락이 다 떨어질 때까지 삼킨다.
         if (action == MotionEvent.ACTION_POINTER_DOWN) pullDown = false;
         boolean pulled = pullDown && action == MotionEvent.ACTION_MOVE
@@ -353,7 +399,7 @@ public class ViewActivity extends Activity {
             MotionEvent cancel = MotionEvent.obtain(ev);
             cancel.setAction(MotionEvent.ACTION_CANCEL);
             inject(h, cancel, v);
-            if (threeFingers && toolbar.getVisibility() == View.VISIBLE) ui.post(hideToolbar);
+            if (threeFingers) toggleMode();
             else showToolbar();
             return true;
         }
@@ -416,11 +462,10 @@ public class ViewActivity extends Activity {
         });
         toolbar.addView(exit);
 
-        modeButton = new Button(this);
-        modeButton.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { toggleMode(); }
-        });
-        toolbar.addView(modeButton);
+        modeText = new TextView(this);
+        modeText.setTextColor(Color.WHITE);
+        modeText.setPadding(pad * 2, 0, pad * 2, 0);
+        toolbar.addView(modeText);
 
         minus = new Button(this);
         minus.setText("깊이 −");
@@ -450,9 +495,9 @@ public class ViewActivity extends Activity {
         return toolbar;
     }
 
-    /** 모드 버튼은 지금 모드를 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
+    /** 지금 모드와 바꾸는 법을 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
     private void showMode() {
-        modeButton.setText(sbs ? "모드: SBS" : "모드: 2D→3D");
+        modeText.setText((sbs ? "SBS 3D" : "2D→3D 변환") + "\n세 손가락 터치: SBS 3D 켜기/끄기");
         int depth = sbs ? View.GONE : View.VISIBLE;
         minus.setVisibility(depth);
         gainText.setVisibility(depth);

@@ -21,17 +21,8 @@ public class App extends Application {
         return c.getSharedPreferences("apps", Context.MODE_PRIVATE);
     }
 
-    /** true 면 앱이 SBS 로 그린다고 보고 엔진 없이 그대로 위빙한다. */
-    static boolean isSbs(Context c, String pkg) {
-        return prefs(c).getBoolean(pkg + ".sbs", false);
-    }
-
     static float gain(Context c, String pkg) {
         return prefs(c).getFloat(pkg + ".gain", DEFAULT_GAIN);
-    }
-
-    static void save(Context c, String pkg, boolean sbs, float gain) {
-        prefs(c).edit().putBoolean(pkg + ".sbs", sbs).putFloat(pkg + ".gain", gain).apply();
     }
 
     static boolean isFavorite(Context c, String pkg) {

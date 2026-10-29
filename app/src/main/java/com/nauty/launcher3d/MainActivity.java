@@ -16,8 +16,6 @@ import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.GridView;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -30,7 +28,7 @@ import java.util.List;
 
 /**
  * 앱 선택 화면. 고르면 3D 화면(ViewActivity)에서 그 앱을 띄운다.
- * 길게 누르면 앱별 설정(2D 변환/SBS, 깊이)을 바꾼다.
+ * 길게 누르면 앱별 설정(즐겨찾기, 깊이)을 바꾼다.
  */
 public class MainActivity extends Activity implements Helper.Listener {
 
@@ -73,6 +71,15 @@ public class MainActivity extends Activity implements Helper.Listener {
         });
         bar.addView(favToggle);
         root.addView(bar);
+
+        TextView guide = new TextView(this);
+        guide.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        guide.setPadding(0, dp(8), 0, 0);
+        guide.setText("· 앱을 누르면 3D 로 실행 — 2D 화면을 실시간으로 3D 변환합니다\n"
+                + "· 앱을 길게 누르면 설정 — 즐겨찾기, 깊이\n"
+                + "· 3D 화면에서 세 손가락 터치 — SBS 3D 켜기/끄기 (유튜브의 SBS 영상 등)\n"
+                + "· 3D 화면 위쪽에서 아래로 끌어내리기 — 메뉴 (나가기, 깊이, 눈 추적 상태)");
+        root.addView(guide);
 
         grid = new GridView(this);
         grid.setColumnWidth(dp(112));
@@ -188,21 +195,13 @@ public class MainActivity extends Activity implements Helper.Listener {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(pad, pad / 2, pad, 0);
 
-        final RadioGroup mode = new RadioGroup(this);
-        final RadioButton mono = new RadioButton(this);
-        mono.setText("2D 앱 → 3D 변환 (Leia 엔진)");
-        mono.setId(View.generateViewId());
-        final RadioButton sbs = new RadioButton(this);
-        sbs.setText("SBS 로 그리는 앱 (변환 없이 좌우 그대로)");
-        sbs.setId(View.generateViewId());
-        mode.addView(mono);
-        mode.addView(sbs);
-        mode.check(App.isSbs(this, e.pkg) ? sbs.getId() : mono.getId());
         final android.widget.CheckBox fav = new android.widget.CheckBox(this);
         fav.setText("즐겨찾기");
         fav.setChecked(App.isFavorite(this, e.pkg));
         box.addView(fav);
-        box.addView(mode);
+        TextView modeHint = new TextView(this);
+        modeHint.setText("3D 화면은 2D→3D 변환으로 시작합니다. SBS 영상이 나오면 세 손가락으로 터치해 SBS 3D 로 바꿉니다.");
+        box.addView(modeHint);
 
         final TextView depthLabel = new TextView(this);
         depthLabel.setPadding(0, pad, 0, 0);
@@ -226,16 +225,14 @@ public class MainActivity extends Activity implements Helper.Listener {
                 .setView(box)
                 .setPositiveButton("저장", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
-                        App.save(MainActivity.this, e.pkg, mode.getCheckedRadioButtonId() == sbs.getId(),
-                                0.1f + depth.getProgress() * 0.05f);
+                        App.saveGain(MainActivity.this, e.pkg, 0.1f + depth.getProgress() * 0.05f);
                         App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
                         refresh();
                     }
                 })
                 .setNeutralButton("3D 로 실행", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
-                        App.save(MainActivity.this, e.pkg, mode.getCheckedRadioButtonId() == sbs.getId(),
-                                0.1f + depth.getProgress() * 0.05f);
+                        App.saveGain(MainActivity.this, e.pkg, 0.1f + depth.getProgress() * 0.05f);
                         App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
                         refresh();
                         start(e);
@@ -305,7 +302,7 @@ public class MainActivity extends Activity implements Helper.Listener {
             d.setBounds(0, 0, dp(56), dp(56));
             t.setCompoundDrawables(null, d, null, null);
             String label = App.isFavorite(MainActivity.this, e.pkg) ? "★ " + e.label : e.label;
-            t.setText(App.isSbs(MainActivity.this, e.pkg) ? label + "\n(SBS)" : label);
+            t.setText(label);
             return t;
         }
     }
