@@ -78,7 +78,7 @@ public class MainActivity extends Activity implements Helper.Listener {
         guide.setText("· 앱을 누르면 3D 로 실행 — 2D 화면을 실시간으로 3D 변환합니다\n"
                 + "· 앱을 길게 누르면 설정 — 즐겨찾기, 깊이\n"
                 + "· 3D 화면에서 세 손가락 터치 — SBS 3D 켜기/끄기 (유튜브의 SBS 영상 등)\n"
-                + "· 3D 화면 위쪽에서 아래로 끌어내리기 — 메뉴 (나가기, 깊이, 눈 추적 상태)");
+                + "· 3D 화면 오른쪽 가장자리 가운데에서 왼쪽으로 밀기 — 메뉴 (나가기, SBS 3D 켜기/끄기, 영상 10초 뒤로·재생/멈춤·10초 앞으로, 깊이, 눈 추적 상태)");
         root.addView(guide);
 
         grid = new GridView(this);

@@ -5,6 +5,9 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.media.session.MediaController;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
@@ -43,6 +46,8 @@ public class HelperService extends IHelper.Stub {
 
     private final SparseArray<VirtualDisplay> displays = new SparseArray<>();
     private DisplayManager dm;
+    private Object sessions;
+    private Context shell;
     private Object im;
     private Method inject;
     private Method setDisplay;
@@ -160,6 +165,99 @@ public class HelperService extends IHelper.Stub {
             Log.e(TAG, "태스크 조회 실패", t);
             return -1;
         }
+    }
+
+    @Override
+    public String processState(String pkg) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : run("/system/bin/dumpsys", "activity", "processes", pkg).split("\n")) {
+            String t = line.trim();
+            if (t.startsWith("*APP*") || t.startsWith("curProcState") || t.startsWith("curCapability")) {
+                sb.append(t).append('\n');
+            }
+        }
+        sb.append(run("/system/bin/cmd", "appops", "get", pkg, "CAMERA").trim());
+        return sb.toString();
+    }
+
+    // --- 재생 조작 ---
+    // 유튜브 세션은 빨리감기/되감기 동작을 내놓지 않는다(실기 actions=8615: 재생·멈춤·다음·
+    // 위치 이동). 그래서 미디어 키 대신 세션의 위치 이동(seekTo)을 쓴다. shell 은
+    // MEDIA_CONTENT_CONTROL 이 있어 다른 앱의 세션을 볼 수 있다.
+
+    @Override
+    public String playPause(String pkg) {
+        try {
+            MediaController c = controller(pkg);
+            if (c == null) return "재생 중인 영상이 없음";
+            PlaybackState s = c.getPlaybackState();
+            if (s != null && s.getState() == PlaybackState.STATE_PLAYING) c.getTransportControls().pause();
+            else c.getTransportControls().play();
+            Log.i(TAG, pkg + " 재생/멈춤 (상태 " + (s == null ? "?" : s.getState()) + ")");
+            return null;
+        } catch (Throwable t) {
+            Log.e(TAG, "재생/멈춤 실패", t);
+            return "재생/멈춤 실패";
+        }
+    }
+
+    @Override
+    public String seek(String pkg, long deltaMs) {
+        try {
+            MediaController c = controller(pkg);
+            PlaybackState s = c == null ? null : c.getPlaybackState();
+            if (s == null) return "재생 중인 영상이 없음";
+            long pos = s.getPosition();
+            if (s.getState() == PlaybackState.STATE_PLAYING) {
+                pos += (long) ((SystemClock.elapsedRealtime() - s.getLastPositionUpdateTime()) * s.getPlaybackSpeed());
+            }
+            c.getTransportControls().seekTo(Math.max(0, pos + deltaMs));
+            Log.i(TAG, pkg + " 위치 " + pos + " → " + Math.max(0, pos + deltaMs));
+            return null;
+        } catch (Throwable t) {
+            Log.e(TAG, "위치 이동 실패", t);
+            return "위치 이동 실패";
+        }
+    }
+
+    private MediaController controller(String pkg) throws Exception {
+        List<?> tokens = sessionTokens();
+        for (Object t : tokens) {
+            MediaController c = new MediaController(shellContext(), (MediaSession.Token) t);
+            if (pkg.equals(c.getPackageName())) return c;
+        }
+        Log.i(TAG, pkg + " 재생 세션 없음 (" + tokens.size() + "개 중)");
+        return null;
+    }
+
+    /**
+     * 시스템 재생 세션 서비스에 바로 묻는다. MediaSessionManager 는 앱 프로세스에서만 채워지는
+     * 미디어 모듈 초기화에 기대는데, 이 프로세스에선 그걸 넣어 줘도 생성자가 null 을 만났다
+     * (실기 0.1.21·0.1.22-test). 서비스의 getSessions 는 버전마다 사용자 인자가 int 또는 UserHandle.
+     */
+    private List<?> sessionTokens() throws Exception {
+        Object svc;
+        synchronized (this) {
+            if (sessions == null) {
+                android.os.IBinder b = (android.os.IBinder) Class.forName("android.os.ServiceManager")
+                        .getMethod("getService", String.class).invoke(null, "media_session");
+                sessions = Class.forName("android.media.session.ISessionManager$Stub")
+                        .getMethod("asInterface", android.os.IBinder.class).invoke(null, b);
+            }
+            svc = sessions;
+        }
+        for (Method m : svc.getClass().getMethods()) {
+            if (!m.getName().equals("getSessions") || m.getParameterTypes().length != 2) continue;
+            Class<?> user = m.getParameterTypes()[1];
+            Object arg = user == int.class ? (Object) 0 : android.os.Process.myUserHandle();
+            return (List<?>) m.invoke(svc, null, arg);
+        }
+        throw new NoSuchMethodException("ISessionManager.getSessions");
+    }
+
+    private synchronized Context shellContext() throws Exception {
+        if (shell == null) shell = new ShellContext(systemContext());
+        return shell;
     }
 
     // --- 입력 주입 (데모 VdHelper.Injector 와 같다) ---

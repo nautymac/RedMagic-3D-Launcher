@@ -55,14 +55,15 @@ you're set.
 | Show only favorites | Use the **즐겨찾기만 / 전체 보기** (Favorites only / Show all) button at the top |
 | Go back inside the app | Use the back gesture as usual |
 | Watch an SBS video in 3D (YouTube etc.) | **Touch with three fingers** in the 3D screen. Touch again to go back to 2D→3D conversion |
-| Adjust depth or exit | **Pull down from near the top of the screen with one finger.** A bar with **나가기** (Exit), the current mode, **깊이 − +** (Depth) and **눈 추적** (eye tracking status) appears at the top and closes by itself after 4 seconds |
+| Open the menu (exit, SBS, video controls, depth) | **Swipe left with one finger from the middle of the right edge.** A menu appears on the right with **나가기** (Exit), **SBS 3D 켜기/끄기** (SBS 3D on/off), **« 10초 · 재생/멈춤 · 10초 »** (back 10 s · play/pause · forward 10 s), **깊이 − +** (Depth) and **눈 추적** (eye tracking status). It closes by itself after 4 seconds |
 
 - Leaving the 3D screen closes the app too. If the app closes itself, the 3D screen closes as well.
 - If the app is already running when you launch it, it is closed and started fresh.
 - **2D→3D or SBS**: the 3D screen always starts in 2D→3D (live conversion).
-  When an app shows an SBS video, as YouTube does, touch with three fingers to switch to SBS 3D. The app keeps running.
+  When an app shows an SBS video, as YouTube does, touch with three fingers or tap **SBS 3D 켜기** in the menu to switch to SBS 3D. The app keeps running, and YouTube stays in fullscreen.
   The picture is read as half-width SBS (both eyes squeezed into one frame).
-- **Eye tracking** works in both modes. The bar's **눈 추적** label shows its state: 동작 중 (working), 얼굴 안 보임 (no face found) or 사용 불가 (unavailable).
+- **Video controls**: the menu's « 10초 · 재생/멈춤 · 10초 » buttons control the running app's media session (YouTube etc.). In an app without one, you see 재생 중인 영상이 없음 (no video playing).
+- **Eye tracking** works in both modes. The menu's **눈 추적** label shows its state: 동작 중 (working), 얼굴 안 보임 (no face found) or 사용 불가 (unavailable).
 
 ## After a reboot
 Pairing and permissions stay. Just **turn on Wireless debugging → tap Start in Shizuku**.

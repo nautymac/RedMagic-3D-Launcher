@@ -28,4 +28,13 @@ interface IHelper {
 
     /** 디스플레이의 화면(출력면)을 바꾼다. null 이면 떼어 낸다. 앱은 그대로 돈다. */
     void setSurface(int displayId, in Surface surface) = 7;
+
+    /** pkg 의 재생 세션을 재생/멈춤한다. 성공하면 null, 아니면 이유. */
+    String playPause(String pkg) = 8;
+
+    /** pkg 의 재생 위치를 deltaMs 만큼 옮긴다(음수면 뒤로). 성공하면 null, 아니면 이유. */
+    String seek(String pkg, long deltaMs) = 9;
+
+    /** pkg 프로세스의 상태(procState·capability)와 카메라 앱옵스. 로그용. */
+    String processState(String pkg) = 10;
 }

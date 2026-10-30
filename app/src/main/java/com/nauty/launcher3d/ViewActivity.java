@@ -50,9 +50,8 @@ import com.leiainc.leiamediasdk.interfaces.MonoVideoSurfaceRenderer;
  * (영상 영역만 나누는 합성기를 0.1.15~0.1.18 시험판으로 만들었다가 쓰지 않기로 했다.)
  *
  * 뒤로 제스처는 앱에 KEYCODE_BACK 으로 넘긴다. 세 손가락 터치는 SBS 3D 를 켜고 끈다(유튜브의 SBS
- * 영상 등). 화면 위쪽에서 끌어내리면 위에 도구 막대(나가기·모드·깊이·눈 추적 상태)가 잠깐 나온다.
- * 이 화면을 나가면 디스플레이를
- * 없애고, 그 위의 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
+ * 영상 등). 오른쪽 가장자리에서 왼쪽으로 밀면 오른쪽에 메뉴(나가기·SBS 3D·깊이·눈 추적 상태)가
+ * 잠깐 나온다. 이 화면을 나가면 디스플레이를 없애고, 그 위의 앱 화면도 함께 닫힌다. 앱이 스스로 끝나 디스플레이가 비면 이 화면도 닫는다.
  */
 public class ViewActivity extends Activity {
 
@@ -91,7 +90,8 @@ public class ViewActivity extends Activity {
     private int trackerAttempt;
     private int faceSamples;
     private boolean viewerAnnounced;
-    private boolean trackerReasked;
+    private int trackerReasks;
+    private static final int TRACKER_REASKS = 4;
     private boolean lastSeen;
 
     // 추적기는 별도 시스템 서비스이고, Android 는 앞에 있는 앱이 카메라 권리를 빌려줄 때만 서비스가
@@ -111,16 +111,22 @@ public class ViewActivity extends Activity {
     private volatile boolean destroyed;
 
     private LinearLayout toolbar;
-    private Button minus, plus;
-    private TextView modeText, gainText, trackText;
+    private Button sbsButton, minus, plus;
+    private LinearLayout depthRow;
+    private TextView gainText, trackText;
     private boolean touchToToolbar;
-    /** 막대를 열거나 모드를 바꾼 동작. 손가락이 다 떨어질 때까지 앱에 보내지 않는다. */
+    /** 메뉴를 열거나 모드를 바꾼 동작. 손가락이 다 떨어질 때까지 앱에 보내지 않는다. */
     private boolean menuGesture;
-    /** 위쪽 이 높이 안에서 시작해 이만큼 끌어내리면 막대를 연다. */
-    private static final int PULL_ZONE_DP = 48;
-    private static final int PULL_DISTANCE_DP = 80;
-    private boolean pullDown;
-    private float pullStartY;
+    /**
+     * 오른쪽 가장자리 이 폭 안에서 시작해 왼쪽으로 이만큼 밀면 메뉴를 연다. 위에서 끌어내리기는
+     * 태블릿의 알림창 제스처와 겹쳐서 없앴다(사용자).
+     */
+    private static final int EDGE_ZONE_DP = 32;
+    private static final int EDGE_SWIPE_DP = 60;
+    /** 시스템 뒤로 제스처에서 빼 달라는 오른쪽 가장자리 높이. Android 는 한쪽에 200dp 까지만 받아 준다. */
+    private static final int EDGE_EXCLUDE_DP = 200;
+    private boolean edgeSwipe;
+    private float edgeStartX;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -142,15 +148,17 @@ public class ViewActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(buildToolbar(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL));
-        setContentView(root);
-        goFullscreen();
-        getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener() {
-            @Override public void onSystemUiVisibilityChange(int v) {
-                // 사용자가 가장자리를 쓸어 시스템 바를 꺼냈다 → 도구 막대도 같이 보여 준다.
-                if ((v & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) showToolbar();
+                Gravity.END | Gravity.CENTER_VERTICAL));
+        // 오른쪽 가장자리 가운데는 시스템 뒤로 제스처 대신 메뉴 제스처로 쓴다.
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+                int w = r - l, half = dp(EDGE_EXCLUDE_DP) / 2, mid = (b - t) / 2;
+                v.setSystemGestureExclusionRects(java.util.Collections.singletonList(
+                        new Rect(w - dp(EDGE_ZONE_DP), mid - half, w, mid + half)));
             }
         });
+        setContentView(root);
+        goFullscreen();
 
         InputViewsAsset asset = new InputViewsAsset();
         asset.CreateEmptySurfaceForVideo(FRAME_W, FRAME_H, new SurfaceTextureReadyCallback() {
@@ -166,7 +174,7 @@ public class ViewActivity extends Activity {
         configure(false);
 
         initSdk();
-        Toast.makeText(this, "세 손가락 터치: SBS 3D 켜기/끄기 · 위에서 끌어내리기: 메뉴", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "세 손가락 터치: SBS 3D 켜기/끄기 · 오른쪽 가장자리에서 왼쪽으로 밀기: 메뉴", Toast.LENGTH_LONG).show();
     }
 
     /**
@@ -243,12 +251,13 @@ public class ViewActivity extends Activity {
         return true;
     }
 
-    /** 엔진을 내린다. 그 전에 디스플레이를 엔진 입력면에서 떼어 둔다. pipeline 스레드에서만 부른다. */
+    /**
+     * 엔진을 내린다. pipeline 스레드에서만 부른다. 디스플레이는 떼지 않는다 — 출력면이 null 이 되면
+     * 시스템이 디스플레이를 꺼짐으로 보고 앱을 멈췄다 다시 켜서, 유튜브가 전체화면에서 빠졌다
+     * (실기 0.1.23-test: "Display 25 state is now (1)" → wm_stop_activity). 잠깐 버려진 면에
+     * 그리는 건 괜찮고, 곧 새 면으로 갈아 끼운다.
+     */
     private void dropMono() {
-        IHelper h = Helper.get();
-        if (h != null && displayId >= 0) {
-            try { h.setSurface(displayId, null); } catch (Throwable ignored) { }
-        }
         Object e = monoEngine;
         monoEngine = null;
         if (e != null) {
@@ -294,13 +303,11 @@ public class ViewActivity extends Activity {
         if (switching || out == null || displayId < 0) return;
         switching = true;
         final boolean toSbs = !sbs;
+        sbsButton.setEnabled(false);
         Toast.makeText(this, toSbs ? "SBS 3D 켜는 중…" : "SBS 3D 끄는 중…", Toast.LENGTH_SHORT).show();
         pipeline.execute(new Runnable() { @Override public void run() {
-            if (toSbs) dropMono();   // 디스플레이를 떼고 엔진을 내린다
-            else {
-                IHelper h = Helper.get();
-                if (h != null) { try { h.setSurface(displayId, null); } catch (Throwable ignored) { } }
-            }
+            // 디스플레이는 떼지 않고 새 면이 준비되면 바로 갈아 끼운다(dropMono 주석 참고).
+            if (toSbs) dropMono();
             Surface old = out;
             Surface fresh = freshInput(toSbs);
             if (fresh == null) { fail("3D 입력면을 다시 만들지 못했습니다"); return; }
@@ -321,7 +328,9 @@ public class ViewActivity extends Activity {
                 Toast.makeText(ViewActivity.this, sbs ? "SBS 3D 켜짐" : "SBS 3D 꺼짐 — 2D→3D 변환",
                         Toast.LENGTH_SHORT).show();
                 switching = false;
+                sbsButton.setEnabled(true);
                 showMode();
+                if (toolbar.getVisibility() == View.VISIBLE) scheduleHideToolbar();
             }});
         }});
     }
@@ -374,8 +383,8 @@ public class ViewActivity extends Activity {
         if (action == MotionEvent.ACTION_DOWN) {
             touchToToolbar = hits(toolbar, ev);
             menuGesture = false;
-            pullDown = ev.getY() < dp(PULL_ZONE_DP);
-            pullStartY = ev.getY();
+            edgeSwipe = ev.getX() > getWindow().getDecorView().getWidth() - dp(EDGE_ZONE_DP);
+            edgeStartX = ev.getX();
         }
         if (touchToToolbar) {
             scheduleHideToolbar();
@@ -384,18 +393,18 @@ public class ViewActivity extends Activity {
         IHelper h = Helper.get();
         View v = leiaView;
         if (h == null || displayId < 0 || v.getWidth() == 0 || v.getHeight() == 0) return true;
-        // 화면 위쪽에서 한 손가락으로 아래로 끌어내리면 막대를 연다. 시스템 바를 쓸어 꺼내는
+        // 오른쪽 가장자리에서 한 손가락으로 왼쪽으로 밀면 메뉴를 연다. 시스템 바를 쓸어 꺼내는
         // 방법은 앱이 포커스를 가져가면 안 통한다(실기: DroidDeck 이 가상 디스플레이에서 포커스를
         // 쥐자 이 화면에 알림이 안 옴). 그래서 터치를 직접 본다.
         // 세 손가락 터치는 SBS 3D 를 켜고 끈다 — 유튜브의 SBS 영상처럼 앱 안에서 SBS 가 나올 때.
         // 앱에는 이미 보낸 터치를 취소로 끝내 주고, 나머지는 손가락이 다 떨어질 때까지 삼킨다.
-        if (action == MotionEvent.ACTION_POINTER_DOWN) pullDown = false;
-        boolean pulled = pullDown && action == MotionEvent.ACTION_MOVE
-                && ev.getY() - pullStartY > dp(PULL_DISTANCE_DP);
+        if (action == MotionEvent.ACTION_POINTER_DOWN) edgeSwipe = false;
+        boolean swiped = edgeSwipe && action == MotionEvent.ACTION_MOVE
+                && edgeStartX - ev.getX() > dp(EDGE_SWIPE_DP);
         boolean threeFingers = action == MotionEvent.ACTION_POINTER_DOWN && ev.getPointerCount() >= 3;
-        if (!menuGesture && (pulled || threeFingers)) {
+        if (!menuGesture && (swiped || threeFingers)) {
             menuGesture = true;
-            pullDown = false;
+            edgeSwipe = false;
             MotionEvent cancel = MotionEvent.obtain(ev);
             cancel.setAction(MotionEvent.ACTION_CANCEL);
             inject(h, cancel, v);
@@ -445,27 +454,44 @@ public class ViewActivity extends Activity {
         return super.dispatchKeyEvent(ev);
     }
 
-    // --- 도구 막대 ---
+    // --- 메뉴 (오른쪽 세로 막대) ---
 
     private View buildToolbar() {
         toolbar = new LinearLayout(this);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setOrientation(LinearLayout.VERTICAL);
+        toolbar.setGravity(Gravity.CENTER_HORIZONTAL);
         toolbar.setBackgroundColor(0xCC202020);
         int pad = dp(8);
-        toolbar.setPadding(pad, pad, pad, pad);
+        toolbar.setPadding(pad * 2, pad * 2, pad * 2, pad * 2);
         toolbar.setVisibility(View.GONE);
+        // SBS 에서 깊이 줄이 빠져도 폭이 줄지 않게(줄면 버튼 글자가 잘렸다).
+        toolbar.setMinimumWidth(dp(300));
+        LinearLayout.LayoutParams full = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 
         Button exit = new Button(this);
         exit.setText("나가기");
         exit.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { finish(); }
         });
-        toolbar.addView(exit);
+        toolbar.addView(exit, full);
 
-        modeText = new TextView(this);
-        modeText.setTextColor(Color.WHITE);
-        modeText.setPadding(pad * 2, 0, pad * 2, 0);
-        toolbar.addView(modeText);
+        // 세 손가락 터치와 같은 전환(실기 확인된 경로).
+        sbsButton = new Button(this);
+        sbsButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleMode(); }
+        });
+        toolbar.addView(sbsButton, full);
+
+        // 영상 재생 조작. 앱 화면을 건드리지 않고 도우미가 앱의 재생 세션을 직접 움직인다.
+        LinearLayout mediaRow = new LinearLayout(this);
+        mediaRow.addView(mediaButton("« 10초", false, -10000), weight());
+        mediaRow.addView(mediaButton("재생/멈춤", true, 0), weight());
+        mediaRow.addView(mediaButton("10초 »", false, 10000), weight());
+        toolbar.addView(mediaRow, full);
+
+        depthRow = new LinearLayout(this);
+        depthRow.setGravity(Gravity.CENTER_VERTICAL);
 
         minus = new Button(this);
         minus.setText("깊이 −");
@@ -480,13 +506,14 @@ public class ViewActivity extends Activity {
         plus.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { setGain(gain + 0.05f); }
         });
-        toolbar.addView(minus);
-        toolbar.addView(gainText);
-        toolbar.addView(plus);
+        depthRow.addView(minus);
+        depthRow.addView(gainText);
+        depthRow.addView(plus);
+        toolbar.addView(depthRow);
 
         trackText = new TextView(this);
         trackText.setTextColor(Color.WHITE);
-        trackText.setPadding(pad * 2, 0, pad, 0);
+        trackText.setPadding(0, pad, 0, 0);
         trackText.setText("눈 추적: 확인 중");
         toolbar.addView(trackText);
 
@@ -495,13 +522,43 @@ public class ViewActivity extends Activity {
         return toolbar;
     }
 
-    /** 지금 모드와 바꾸는 법을 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
+    private static LinearLayout.LayoutParams weight() {
+        return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    }
+
+    private Button mediaButton(String label, final boolean playPause, final long deltaMs) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setSingleLine(true);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                scheduleHideToolbar();
+                final IHelper h = Helper.get();
+                if (h == null) return;
+                new Thread(new Runnable() { @Override public void run() {
+                    String err;
+                    try {
+                        err = playPause ? h.playPause(pkg) : h.seek(pkg, deltaMs);
+                    } catch (Throwable t) {
+                        Log.e(TAG, "재생 조작 실패", t);
+                        err = "재생 조작 실패";
+                    }
+                    if (err != null) {
+                        final String msg = err;
+                        ui.post(new Runnable() { @Override public void run() {
+                            Toast.makeText(ViewActivity.this, msg, Toast.LENGTH_SHORT).show();
+                        }});
+                    }
+                }}).start();
+            }
+        });
+        return b;
+    }
+
+    /** SBS 버튼은 누르면 될 상태를 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
     private void showMode() {
-        modeText.setText((sbs ? "SBS 3D" : "2D→3D 변환") + "\n세 손가락 터치: SBS 3D 켜기/끄기");
-        int depth = sbs ? View.GONE : View.VISIBLE;
-        minus.setVisibility(depth);
-        gainText.setVisibility(depth);
-        plus.setVisibility(depth);
+        sbsButton.setText(sbs ? "SBS 3D 끄기" : "SBS 3D 켜기");
+        depthRow.setVisibility(sbs ? View.GONE : View.VISIBLE);
     }
 
     private void showTracking(String s) {
@@ -607,7 +664,7 @@ public class ViewActivity extends Activity {
             trackerAttempt = 0;
             faceSamples = 0;
             viewerAnnounced = false;
-            trackerReasked = false;
+            trackerReasks = 0;
             ui.postDelayed(trackerWatch, TRACKER_RETRY_MS);
         } else {
             ui.removeCallbacks(trackerWatch);
@@ -640,6 +697,20 @@ public class ViewActivity extends Activity {
             try { unbindService(trackerLease); } catch (Throwable ignored) { }
             trackerLease = null;
         }
+    }
+
+    /** 카메라가 거부될 때 추적 서비스와 이 앱의 프로세스 상태를 로그에 남긴다(원인 확인용). */
+    private void logTrackerState() {
+        final IHelper h = Helper.get();
+        if (h == null) return;
+        new Thread(new Runnable() { @Override public void run() {
+            try {
+                Log.i(TAG, "추적 서비스 상태:\n" + h.processState(TRACKER_PACKAGE));
+                Log.i(TAG, "이 앱 상태:\n" + h.processState(getPackageName()));
+            } catch (Throwable t) {
+                Log.w(TAG, "프로세스 상태 조회 실패: " + t);
+            }
+        }}).start();
     }
 
     private final Runnable trackerWatch = new Runnable() {
@@ -681,9 +752,16 @@ public class ViewActivity extends Activity {
                 }
                 // 돌고는 있는데 한참 아무도 안 보이면 보통 카메라가 안 열린 것(서비스는 거부되면 재시도 안 함).
                 // 한 번 더 요청하면 서비스의 포그라운드 세션이 위 바인딩 아래서 새로 시작된다.
-                if (!seen && !viewerAnnounced && !trackerReasked && faceSamples >= FACE_SAMPLES_BEFORE_REASK) {
-                    trackerReasked = true;
-                    Log.w(TAG, faceSamples + "초 동안 시청자 없음 — 카메라 거부 가능성, 추적기 재요청");
+                // 한 번으로 모자랄 때가 있어(실기 0.1.21-test: 처음 두 번 다 CameraService "Access ...
+                // has been restricted") 표본 4개마다 몇 번 더 하고, 그때마다 카메라 권리 바인딩도 새로 건다.
+                if (!seen && !viewerAnnounced && trackerReasks < TRACKER_REASKS
+                        && faceSamples >= FACE_SAMPLES_BEFORE_REASK * (trackerReasks + 1)) {
+                    trackerReasks++;
+                    Log.w(TAG, faceSamples + "번째 표본까지 시청자 없음 — 카메라 거부 가능성, 추적기 재요청 "
+                            + trackerReasks + "/" + TRACKER_REASKS);
+                    logTrackerState();
+                    lendCameraToTracker(false);
+                    lendCameraToTracker(true);
                     sdk.enableFaceTracking(false);
                     sdk.enableFaceTracking(true);
                 }
