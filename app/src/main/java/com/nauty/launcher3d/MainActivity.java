@@ -184,9 +184,16 @@ public class MainActivity extends Activity implements Helper.Listener {
             Helper.connect();
             return;
         }
+        boolean via = App.viaS3d(this, e.pkg) && !App.S3D_PKG.equals(e.pkg);
+        if (via && !App.s3dReady(this)) {
+            Toast.makeText(this, "screen3d 로 실행하려면 재생 화면을 열 수 있게 고친 screen3d 가 필요합니다 — 2D→3D 로 실행합니다",
+                    Toast.LENGTH_LONG).show();
+            via = false;
+        }
         startActivity(new Intent(this, ViewActivity.class)
                 .putExtra(ViewActivity.EXTRA_COMPONENT, e.component)
-                .putExtra(ViewActivity.EXTRA_LABEL, e.label));
+                .putExtra(ViewActivity.EXTRA_LABEL, e.label)
+                .putExtra(ViewActivity.EXTRA_VIA_S3D, via));
     }
 
     private void settings(final Entry e) {
@@ -199,8 +206,16 @@ public class MainActivity extends Activity implements Helper.Listener {
         fav.setText("즐겨찾기");
         fav.setChecked(App.isFavorite(this, e.pkg));
         box.addView(fav);
+        // screen3d 로 실행: 재생 화면을 열 수 있는 screen3d 가 있을 때만 보인다(App.s3dReady).
+        final android.widget.CheckBox via = new android.widget.CheckBox(this);
+        via.setText("screen3d 로 실행 (SBS 3D 로 바로 시작)");
+        via.setChecked(App.viaS3d(this, e.pkg));
+        boolean s3d = App.s3dReady(this) && !App.S3D_PKG.equals(e.pkg);
+        via.setVisibility(s3d ? View.VISIBLE : View.GONE);
+        box.addView(via);
         TextView modeHint = new TextView(this);
-        modeHint.setText("3D 화면은 2D→3D 변환으로 시작합니다. SBS 영상이 나오면 세 손가락으로 터치해 SBS 3D 로 바꿉니다.");
+        modeHint.setText("3D 화면은 2D→3D 변환으로 시작합니다. SBS 영상이 나오면 세 손가락으로 터치해 SBS 3D 로 바꿉니다."
+                + (s3d ? "\n\"screen3d 로 실행\" 을 켜면 screen3d 가 이 앱을 띄워 깊이를 만들고, 3D 화면은 SBS 로 시작합니다." : ""));
         box.addView(modeHint);
 
         final TextView depthLabel = new TextView(this);
@@ -226,14 +241,14 @@ public class MainActivity extends Activity implements Helper.Listener {
                 .setPositiveButton("저장", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         App.saveGain(MainActivity.this, e.pkg, 0.1f + depth.getProgress() * 0.05f);
-                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
+                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked()); App.setViaS3d(MainActivity.this, e.pkg, via.isChecked());
                         refresh();
                     }
                 })
                 .setNeutralButton("3D 로 실행", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         App.saveGain(MainActivity.this, e.pkg, 0.1f + depth.getProgress() * 0.05f);
-                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked());
+                        App.setFavorite(MainActivity.this, e.pkg, fav.isChecked()); App.setViaS3d(MainActivity.this, e.pkg, via.isChecked());
                         refresh();
                         start(e);
                     }

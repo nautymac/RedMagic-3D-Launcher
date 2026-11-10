@@ -57,6 +57,12 @@ public class ViewActivity extends Activity {
 
     static final String EXTRA_COMPONENT = "component";
     static final String EXTRA_LABEL = "label";
+    /**
+     * true 면 앱을 screen3d(별도 앱)로 띄운다: screen3d 재생 화면이 앱을 자기 가상 디스플레이에 띄우고
+     * NPU 깊이로 SBS 를 그리면, 이 화면은 SBS 모드로 위빙만 한다. 재생 화면은 원본에선 외부에 닫혀 있어서
+     * exported=true 로 고친 개인용 screen3d 가 있어야 한다(App.S3D_PLAYER).
+     */
+    static final String EXTRA_VIA_S3D = "viaS3d";
 
     private static final String TAG = "L3D";
     private static final int FRAME_W = 3840;   // CNSDK 입력: 두 눈. 눈당 1920x1200 = 패널과 같은 16:10
@@ -71,8 +77,15 @@ public class ViewActivity extends Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
-    private String component, pkg;
-    private boolean sbs;
+    /** 화면 모드. CONVERT Leia 2D→3D 엔진(시작 모드), SBS 앱의 SBS 영상 그대로, FLAT 변환 끔(일반 2D). */
+    private static final int CONVERT = 0, SBS = 1, FLAT = 2;
+    // NPU 깊이 엔진(0.1.27~0.1.31, Depth Anything V2 + QNN)은 0.1.32 에서 뺐다. screen3d 를 SBS 로
+    // 받는 쪽이 실기에서 더 좋았다(사용자). 기록: FastRPC 는 한 프로세스가 NPU 연결을 닫으면 다시 못 열어
+    // Leia(SNPE)가 죽었고, Android 12+ 는 libcdsprpc.so 를 uses-native-library 로 선언해야 했다.
+
+    private String component, pkg, label;
+    private boolean viaS3d;
+    private int mode = CONVERT;
     private float gain;
 
     private LeiaSDK sdk;
@@ -111,7 +124,7 @@ public class ViewActivity extends Activity {
     private volatile boolean destroyed;
 
     private LinearLayout toolbar;
-    private Button sbsButton, minus, plus;
+    private Button sbsButton, convertButton, minus, plus;
     private LinearLayout depthRow;
     private TextView gainText, trackText;
     private boolean touchToToolbar;
@@ -132,6 +145,9 @@ public class ViewActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         component = getIntent().getStringExtra(EXTRA_COMPONENT);
+        label = getIntent().getStringExtra(EXTRA_LABEL);
+        if (label == null) label = "";
+        viaS3d = getIntent().getBooleanExtra(EXTRA_VIA_S3D, false);
         if (component == null || Helper.get() == null) {
             Toast.makeText(this, "도우미가 연결되지 않았습니다", Toast.LENGTH_SHORT).show();
             finish();
@@ -160,21 +176,29 @@ public class ViewActivity extends Activity {
         setContentView(root);
         goFullscreen();
 
+        // screen3d 로 띄우면 처음부터 SBS(디스플레이가 입력면에 바로 그림), 아니면 Leia 2D→3D.
+        final int first = viaS3d ? SBS : CONVERT;
+        final int inW = viaS3d ? DISPLAY_W : FRAME_W;
         InputViewsAsset asset = new InputViewsAsset();
-        asset.CreateEmptySurfaceForVideo(FRAME_W, FRAME_H, new SurfaceTextureReadyCallback() {
+        asset.CreateEmptySurfaceForVideo(inW, FRAME_H, new SurfaceTextureReadyCallback() {
             @Override public void onSurfaceTextureReady(SurfaceTexture st) {
-                st.setDefaultBufferSize(FRAME_W, FRAME_H);
+                st.setDefaultBufferSize(inW, FRAME_H);
                 out = new Surface(st);
                 pipeline.execute(new Runnable() { @Override public void run() {
-                    if (!buildMono()) fail("Leia 2D→3D 엔진을 쓸 수 없습니다");
+                    if (first == SBS) { attach(out); startedIn(SBS); return; }
+                    if (buildMono()) startedIn(CONVERT);
+                    else fail("Leia 2D→3D 엔진을 쓸 수 없습니다");
                 }});
             }
         });
         leiaView.setViewAsset(asset);
-        configure(false);
+        configure(first);
 
         initSdk();
-        Toast.makeText(this, "세 손가락 터치: SBS 3D 켜기/끄기 · 오른쪽 가장자리에서 왼쪽으로 밀기: 메뉴", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, viaS3d
+                        ? "screen3d 준비 중… 잠시 screen3d 첫 화면이 보였다가 앱이 열립니다"
+                        : "세 손가락 터치: SBS 3D 켜기/끄기 · 오른쪽 가장자리에서 왼쪽으로 밀기: 메뉴",
+                Toast.LENGTH_LONG).show();
     }
 
     /**
@@ -182,14 +206,22 @@ public class ViewActivity extends Activity {
      * SBS: 디스플레이(1920x1200)가 입력면에 그대로 그리고, CNSDK 가 그것을 두 칸(눈당 960x1200)으로
      * 나눠 화면 가득 늘린다(FILL = 늘리기). 디스플레이를 3840 입력면에 붙이면 늘어나지 않고 왼쪽
      * 절반에만 그려져서 오른눈이 비었다(실기, SurfaceFlinger content=1920x1200 / buffer 3840x1200).
+     * FLAT: 디스플레이(1920x1200)를 한 장(1타일)으로, 한 시점만 그린다. 백라이트도 끈다(applyActive).
      */
-    private void configure(boolean sbsInput) {
+    private void configure(int m) {
+        boolean displayInput = m == SBS || m == FLAT;
         try (InterlacedSurfaceViewConfigAccessor c = leiaView.getConfig()) {
-            c.setSourceSize(sbsInput ? DISPLAY_W : FRAME_W, FRAME_H);
-            c.setNumTiles(2, 1);
-            c.setScaleType(sbsInput ? ScaleType.FILL : ScaleType.FIT_CENTER);
+            c.setSourceSize(displayInput ? DISPLAY_W : FRAME_W, FRAME_H);
+            if (m == FLAT) c.setNumTiles(1, 1);
+            else c.setNumTiles(2, 1);
+            c.setScaleType(m == SBS ? ScaleType.FILL : ScaleType.FIT_CENTER);
         } catch (Throwable t) {
             Log.e(TAG, "config 설정 실패", t);
+        }
+        try (InterlacedSurfaceViewConfigAccessor c = leiaView.getConfig()) {
+            c.setSingleViewMode(m == FLAT);
+        } catch (Throwable t) {
+            Log.w(TAG, "단일 시점 설정 실패: " + t);
         }
     }
 
@@ -197,8 +229,8 @@ public class ViewActivity extends Activity {
      * CNSDK 입력면을 새로 만들어 끼우고 그 Surface 를 돌려준다. 이전 입력면은 SDK 가 닫는다
      * (InterlacedRenderer.setInputViewsAsset 이 옛 asset 을 close 한다). pipeline 스레드에서만 부른다.
      */
-    private Surface freshInput(final boolean sbsInput) {
-        final int w = sbsInput ? DISPLAY_W : FRAME_W;
+    private Surface freshInput(final int m) {
+        final int w = m == CONVERT ? FRAME_W : DISPLAY_W;
         final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
         final Surface[] got = new Surface[1];
         final InputViewsAsset asset = new InputViewsAsset();
@@ -212,7 +244,7 @@ public class ViewActivity extends Activity {
         ui.post(new Runnable() { @Override public void run() {
             if (destroyed) return;
             leiaView.setViewAsset(asset);
-            configure(sbsInput);
+            configure(m);
         }});
         try { ready.await(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
         return got[0];
@@ -266,6 +298,21 @@ public class ViewActivity extends Activity {
         if (monoIn != null) { monoIn.release(); monoIn = null; }
     }
 
+    /** 첫 모드가 정해졌다. pipeline 스레드에서 부른다. */
+    private void startedIn(final int m) {
+        ui.post(new Runnable() { @Override public void run() {
+            mode = m;
+            showMode();
+            Log.i(TAG, "시작 모드 " + modeName(m));
+        }});
+    }
+
+    private void toast(final String msg) {
+        ui.post(new Runnable() { @Override public void run() {
+            Toast.makeText(ViewActivity.this, msg, Toast.LENGTH_LONG).show();
+        }});
+    }
+
     // --- 가상 디스플레이 + 앱 실행 (도우미가 한다) ---
 
     /** 디스플레이가 없으면 만들고 앱을 실행한다. 있으면 출력면만 바꾼다. pipeline 스레드에서만 부른다. */
@@ -281,9 +328,11 @@ public class ViewActivity extends Activity {
             if (id < 0) { fail("가상 디스플레이를 만들지 못했습니다"); return; }
             displayId = id;
             if (destroyed) { h.releaseDisplay(id); return; }
-            String err = h.launch(component, id);
+            String err = viaS3d
+                    ? h.launchVia(App.S3D_PLAYER, component, label, id)
+                    : h.launch(component, id);
             if (err != null) { fail("실행 실패: " + err); return; }
-            Log.i(TAG, component + " → 디스플레이 " + id);
+            Log.i(TAG, component + (viaS3d ? " (screen3d)" : "") + " → 디스플레이 " + id);
             ui.postDelayed(watch, 4000);
         } catch (Throwable t) {
             Log.e(TAG, "디스플레이/실행 실패", t);
@@ -300,36 +349,47 @@ public class ViewActivity extends Activity {
      * 그래서 전환마다 입력면을 새로 만들어, 새 생산자는 항상 빈 면에 붙는다.
      */
     private void toggleMode() {
-        if (switching || out == null || displayId < 0) return;
+        setMode(mode == SBS ? CONVERT : SBS);
+    }
+
+    /** 2D→3D 변환을 끄고(일반 2D) 켠다. 메뉴의 "2D→3D 끄기/켜기". */
+    private void toggleConvert() {
+        setMode(mode == FLAT ? CONVERT : FLAT);
+    }
+
+    private static String modeName(int m) {
+        return m == SBS ? "SBS" : m == FLAT ? "2D" : "Leia 2D→3D";
+    }
+
+    private void setMode(final int to) {
+        if (switching || out == null || displayId < 0 || to == mode) return;
         switching = true;
-        final boolean toSbs = !sbs;
-        sbsButton.setEnabled(false);
-        Toast.makeText(this, toSbs ? "SBS 3D 켜는 중…" : "SBS 3D 끄는 중…", Toast.LENGTH_SHORT).show();
+        enableModeButtons(false);
+        Toast.makeText(this, modeName(to) + " 로 바꾸는 중…", Toast.LENGTH_SHORT).show();
         pipeline.execute(new Runnable() { @Override public void run() {
             // 디스플레이는 떼지 않고 새 면이 준비되면 바로 갈아 끼운다(dropMono 주석 참고).
-            if (toSbs) dropMono();
+            dropMono();
             Surface old = out;
-            Surface fresh = freshInput(toSbs);
+            Surface fresh = freshInput(to);
             if (fresh == null) { fail("3D 입력면을 다시 만들지 못했습니다"); return; }
             out = fresh;
             if (old != null) old.release();
-            boolean ok;
-            if (toSbs) {
-                attach(fresh);
-                ok = true;
+            if (to == CONVERT) {
+                if (!buildMono()) { fail("2D→3D 엔진을 만들지 못했습니다"); return; }
             } else {
-                ok = buildMono();
-                if (!ok) fail("2D→3D 엔진을 만들지 못했습니다");
+                attach(fresh);
             }
-            if (!ok) return;
             ui.post(new Runnable() { @Override public void run() {
-                sbs = toSbs;
-                Log.i(TAG, "모드 전환 → " + (sbs ? "SBS" : "2D→3D"));
-                Toast.makeText(ViewActivity.this, sbs ? "SBS 3D 켜짐" : "SBS 3D 꺼짐 — 2D→3D 변환",
+                mode = to;
+                Log.i(TAG, "모드 전환 → " + modeName(mode));
+                Toast.makeText(ViewActivity.this,
+                        mode == SBS ? "SBS 3D 켜짐" : mode == FLAT ? "2D→3D 꺼짐 — 일반 2D"
+                                : modeName(mode) + " 변환 켜짐",
                         Toast.LENGTH_SHORT).show();
                 switching = false;
-                sbsButton.setEnabled(true);
+                enableModeButtons(true);
                 showMode();
+                applyActive();   // FLAT 이면 백라이트·눈 추적을 끄고, 아니면 다시 켠다
                 if (toolbar.getVisibility() == View.VISIBLE) scheduleHideToolbar();
             }});
         }});
@@ -419,7 +479,7 @@ public class ViewActivity extends Activity {
 
     /** 터치를 디스플레이 좌표로 바꿔 보낸다. e 는 여기서 recycle 한다. */
     private void inject(IHelper h, MotionEvent e, View v) {
-        float sx = (sbs ? DISPLAY_W / 2f : DISPLAY_W) / v.getWidth();
+        float sx = (mode == SBS ? DISPLAY_W / 2f : DISPLAY_W) / v.getWidth();
         float sy = (float) FRAME_H / v.getHeight();
         Matrix m = new Matrix();
         m.setScale(sx, sy);
@@ -482,6 +542,13 @@ public class ViewActivity extends Activity {
             @Override public void onClick(View v) { toggleMode(); }
         });
         toolbar.addView(sbsButton, full);
+
+        // 2D→3D 변환 끄기/켜기. 끄면 앱을 일반 2D 로 보여 준다(엔진·백라이트·눈 추적 끔).
+        convertButton = new Button(this);
+        convertButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleConvert(); }
+        });
+        toolbar.addView(convertButton, full);
 
         // 영상 재생 조작. 앱 화면을 건드리지 않고 도우미가 앱의 재생 세션을 직접 움직인다.
         LinearLayout mediaRow = new LinearLayout(this);
@@ -557,8 +624,15 @@ public class ViewActivity extends Activity {
 
     /** SBS 버튼은 누르면 될 상태를 보여 준다. 깊이는 2D→3D 에서만 의미가 있다. */
     private void showMode() {
-        sbsButton.setText(sbs ? "SBS 3D 끄기" : "SBS 3D 켜기");
-        depthRow.setVisibility(sbs ? View.GONE : View.VISIBLE);
+        sbsButton.setText(mode == SBS ? "SBS 3D 끄기" : "SBS 3D 켜기");
+        convertButton.setText(mode == FLAT ? "2D→3D 켜기" : "2D→3D 끄기 (2D 로 보기)");
+        depthRow.setVisibility(mode == CONVERT ? View.VISIBLE : View.GONE);
+        if (mode == FLAT) showTracking("꺼짐 (2D)");
+    }
+
+    private void enableModeButtons(boolean on) {
+        sbsButton.setEnabled(on);
+        convertButton.setEnabled(on);
     }
 
     private void showTracking(String s) {
@@ -652,14 +726,16 @@ public class ViewActivity extends Activity {
 
     private void applyActive() {
         if (sdk == null || !sdkReady) return;
-        lendCameraToTracker(wantActive);
+        // 일반 2D(FLAT)에선 3D 백라이트와 눈 추적이 필요 없다.
+        boolean active = wantActive && mode != FLAT;
+        lendCameraToTracker(active);
         try {
-            sdk.enableFaceTracking(wantActive);
-            sdk.enableBacklight(wantActive);
+            sdk.enableFaceTracking(active);
+            sdk.enableBacklight(active);
         } catch (Throwable t) {
             Log.e(TAG, "백라이트 전환 실패", t);
         }
-        if (wantActive) {
+        if (active) {
             ui.removeCallbacks(trackerWatch);
             trackerAttempt = 0;
             faceSamples = 0;
@@ -715,7 +791,7 @@ public class ViewActivity extends Activity {
 
     private final Runnable trackerWatch = new Runnable() {
         @Override public void run() {
-            if (destroyed || sdk == null || !sdkReady || !wantActive) return;
+            if (destroyed || sdk == null || !sdkReady || !wantActive || mode == FLAT) return;
             try {
                 if (!sdk.isFaceTrackingStarted()) {
                     trackerAttempt++;
@@ -744,7 +820,7 @@ public class ViewActivity extends Activity {
                 // 자리 잡은 뒤에는 상태가 바뀌거나 열 번에 한 번만 남긴다.
                 if (faceSamples < FACE_SAMPLES_FAST || seen != lastSeen || faceSamples % 10 == 0)
                     Log.i(TAG, "시청자 " + (seen ? face.x + "," + face.y + "," + face.z : "안 보임")
-                            + " (표본 " + faceSamples + ", " + (sbs ? "SBS" : "2D→3D") + ")");
+                            + " (표본 " + faceSamples + ", " + modeName(mode) + ")");
                 lastSeen = seen;
                 if (seen && !viewerAnnounced) {
                     viewerAnnounced = true;
@@ -801,6 +877,15 @@ public class ViewActivity extends Activity {
         IHelper h = Helper.get();
         if (h != null && displayId >= 0) {
             try { h.releaseDisplay(displayId); } catch (Throwable ignored) { }
+        }
+        // screen3d 로 띄웠으면 screen3d 와, screen3d 가 자기 디스플레이에 띄운 앱도 끈다. 우리 디스플레이가
+        // 없어지면 screen3d 재생 화면이 기본 화면으로 옮겨 가 계속 돌 수 있어서다.
+        if (viaS3d && h != null) {
+            final IHelper hh = h;
+            final String target = pkg;
+            new Thread(new Runnable() { @Override public void run() {
+                try { hh.forceStop(App.S3D_PKG); hh.forceStop(target); } catch (Throwable ignored) { }
+            }}).start();
         }
         displayId = -1;
         pipeline.shutdownNow();

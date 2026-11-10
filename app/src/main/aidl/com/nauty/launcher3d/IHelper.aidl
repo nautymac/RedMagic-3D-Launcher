@@ -37,4 +37,13 @@ interface IHelper {
 
     /** pkg 프로세스의 상태(procState·capability)와 카메라 앱옵스. 로그용. */
     String processState(String pkg) = 10;
+
+    /**
+     * screen3d 처럼 "띄울 앱" 을 받는 액티비티(player)를 그 디스플레이에 띄운다.
+     * player 앱을 먼저 끄고 새로 띄우며, extra 로 component·name 을 넘긴다. 성공하면 null, 아니면 오류 문구.
+     */
+    String launchVia(String player, String component, String name, int displayId) = 11;
+
+    /** 앱을 강제 종료한다. */
+    void forceStop(String pkg) = 12;
 }

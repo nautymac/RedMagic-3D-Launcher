@@ -135,6 +135,69 @@ public class HelperService extends IHelper.Stub {
         return out.contains("Error") || out.contains("Exception") ? out.trim() : null;
     }
 
+    /**
+     * screen3d 는 첫 화면(MainActivity)이 열릴 때만 Shizuku 에 붙고(bindShell), 재생 화면은 그 연결을 쓴다.
+     * 재생 화면만 바로 띄우면 "Shizuku service not connected" 로 가상 화면을 못 만들어 까맸다(실기 0.1.32).
+     * 그래서 첫 화면을 먼저 띄우고, 연결됐다는 로그가 찍힐 때까지 기다린 뒤 재생 화면을 띄운다.
+     */
+    private static final String S3D_READY_TAG = "Screen3D";
+    private static final String S3D_READY_TEXT = "Shell service connected";
+    private static final long S3D_READY_WAIT_MS = 8000;
+
+    @Override
+    public String launchVia(String player, String component, String name, int displayId) {
+        String pkg = player.substring(0, player.indexOf('/'));
+        // launch 와 같은 이유로 player 앱(screen3d)을 먼저 끈다. 띄울 앱은 player 가 스스로 끄고 띄운다.
+        run("/system/bin/cmd", "activity", "force-stop", pkg);
+        long since = System.currentTimeMillis();
+        String main = launcherActivity(pkg);
+        if (main != null) {
+            String o = run("/system/bin/cmd", "activity", "start-activity",
+                    "--display", String.valueOf(displayId), "-n", main);
+            Log.i(TAG, "준비용 실행 " + main + " @" + displayId + ": " + o.trim());
+            boolean ready = waitForLog(S3D_READY_TAG, S3D_READY_TEXT, since, S3D_READY_WAIT_MS);
+            Log.i(TAG, pkg + (ready ? " 연결 확인 " : " 연결 로그 못 봄(그대로 진행) ")
+                    + (System.currentTimeMillis() - since) + "ms");
+        }
+        String out = run("/system/bin/cmd", "activity", "start-activity",
+                "--display", String.valueOf(displayId), "-n", player,
+                "--es", "component", component, "--es", "name", name);
+        Log.i(TAG, "실행 " + player + " → " + component + " @" + displayId + ": " + out.trim());
+        return out.contains("Error") || out.contains("Exception") ? out.trim() : null;
+    }
+
+    /** pkg 의 런처 액티비티("pkg/cls"). 없으면 null. */
+    private static String launcherActivity(String pkg) {
+        String out = run("/system/bin/cmd", "package", "resolve-activity", "--brief",
+                "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", pkg);
+        String[] lines = out.trim().split("\n");
+        String last = lines[lines.length - 1].trim();
+        return last.startsWith(pkg + "/") ? last : null;
+    }
+
+    /** since(ms, 벽시계) 뒤에 tag 로그에 text 가 찍힐 때까지 기다린다. 찍히면 true. */
+    private static boolean waitForLog(String tag, String text, long since, long maxMs) {
+        long end = SystemClock.uptimeMillis() + maxMs;
+        while (SystemClock.uptimeMillis() < end) {
+            String out = run("/system/bin/logcat", "-d", "-v", "epoch", "-s", tag + ":I");
+            for (String l : out.split("\n")) {
+                if (!l.contains(text)) continue;
+                try {
+                    double t = Double.parseDouble(l.trim().split("\\s+")[0]);
+                    if (t * 1000 >= since - 500) return true;
+                } catch (Throwable ignored) { }
+            }
+            SystemClock.sleep(200);
+        }
+        return false;
+    }
+
+    @Override
+    public void forceStop(String pkg) {
+        run("/system/bin/cmd", "activity", "force-stop", pkg);
+        Log.i(TAG, "강제 종료 " + pkg);
+    }
+
     @Override
     public void injectMotion(MotionEvent e, int displayId) {
         try {

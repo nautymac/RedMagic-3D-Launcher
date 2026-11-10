@@ -55,15 +55,33 @@ you're set.
 | Show only favorites | Use the **즐겨찾기만 / 전체 보기** (Favorites only / Show all) button at the top |
 | Go back inside the app | Use the back gesture as usual |
 | Watch an SBS video in 3D (YouTube etc.) | **Touch with three fingers** in the 3D screen. Touch again to go back to 2D→3D conversion |
-| Open the menu (exit, SBS, video controls, depth) | **Swipe left with one finger from the middle of the right edge.** A menu appears on the right with **나가기** (Exit), **SBS 3D 켜기/끄기** (SBS 3D on/off), **« 10초 · 재생/멈춤 · 10초 »** (back 10 s · play/pause · forward 10 s), **깊이 − +** (Depth) and **눈 추적** (eye tracking status). It closes by itself after 4 seconds |
+| Open the menu (exit, SBS, plain 2D, video controls, depth) | In the 3D screen, **swipe left with one finger from the middle of the right edge**. Each button is explained in [Right-edge menu](#right-edge-menu) below |
 
 - Leaving the 3D screen closes the app too. If the app closes itself, the 3D screen closes as well.
 - If the app is already running when you launch it, it is closed and started fresh.
-- **2D→3D or SBS**: the 3D screen always starts in 2D→3D (live conversion).
-  When an app shows an SBS video, as YouTube does, touch with three fingers or tap **SBS 3D 켜기** in the menu to switch to SBS 3D. The app keeps running, and YouTube stays in fullscreen.
-  The picture is read as half-width SBS (both eyes squeezed into one frame).
-- **Video controls**: the menu's « 10초 · 재생/멈춤 · 10초 » buttons control the running app's media session (YouTube etc.). In an app without one, you see 재생 중인 영상이 없음 (no video playing).
-- **Eye tracking** works in both modes. The menu's **눈 추적** label shows its state: 동작 중 (working), 얼굴 안 보임 (no face found) or 사용 불가 (unavailable).
+- **Three screen modes**: the 3D screen always starts in **2D→3D** (live conversion).
+  - **SBS 3D**: when an app shows an SBS video (left and right views side by side), as YouTube does, touch with three fingers or tap **SBS 3D 켜기** in the menu.
+    The picture is read as half-width SBS (both eyes squeezed into one frame).
+  - **Plain 2D**: tap **2D→3D 끄기** in the menu to see the app as a normal 2D screen. The 3D backlight and eye tracking turn off too.
+  - Switching modes doesn't close the app, and YouTube stays in fullscreen.
+- **Eye tracking** works in 2D→3D and SBS 3D.
+
+## Right-edge menu
+
+In the 3D screen, put one finger on the **middle of the right edge** and **swipe left**. A menu appears on the right.
+The swipe isn't passed to the app. The menu closes by itself when you **don't touch it for 4 seconds**.
+
+| Button | What it does |
+|---|---|
+| **나가기** (Exit) | Closes the 3D screen. The app closes with it |
+| **SBS 3D 켜기 / 끄기** (SBS 3D on / off) | Switches between SBS 3D and 2D→3D. Same as the three-finger touch |
+| **2D→3D 끄기 (2D 로 보기) / 2D→3D 켜기** (2D-to-3D off: plain 2D / on) | Turns 3D off and shows the app as a normal 2D screen (the 3D backlight and eye tracking turn off too). Tap again to go back to 2D→3D |
+| **« 10초 · 재생/멈춤 · 10초 »** (back 10 s · play/pause · forward 10 s) | Controls the app's playback (YouTube etc.) without touching its screen. In an app with nothing playing, you see 재생 중인 영상이 없음 (no video playing) |
+| **깊이 − / +** (Depth − / +) | Lowers or raises the 2D→3D depth in steps of 0.05 (0.10 to 1.00). Saved per app. Shown only in 2D→3D |
+| **눈 추적: …** (Eye tracking) | Eye tracking state: 확인 중 (checking), 시작 중 (starting), 동작 중 (working), 얼굴 안 보임 (no face found), 사용 불가 (unavailable) or 꺼짐 (2D) (off in plain 2D) |
+
+- A button's label shows **what tapping it will do**. For example, it reads SBS 3D 끄기 (SBS 3D off) while you're in SBS 3D, and 2D→3D 켜기 (2D-to-3D on) while you're in plain 2D.
+- While a mode switch runs, you see "… 로 바꾸는 중" (switching to …), and the mode buttons can't be tapped until it finishes.
 
 ## After a reboot
 Pairing and permissions stay. Just **turn on Wireless debugging → tap Start in Shizuku**.
@@ -90,9 +108,10 @@ Android turns Wireless debugging off on every reboot, which is a limit of unroot
 - `MainActivity`: app picker, per-app settings, favorites.
 - `ViewActivity`: the 3D screen.
   ```
-  [2D]  app ─▶ virtual display 1920x1200 = engine input ─▶ Leia 2D→3D engine ─▶ CNSDK input ─▶ weaving
-  [SBS] app ─▶ virtual display 1920x1200 = CNSDK input (split in two, stretched) ──────────▶ weaving
-  touch ─▶ mapped to display coordinates ─▶ helper ─▶ injectInputEvent(displayId)
+  [2D→3D] app ─▶ virtual display 1920x1200 = engine input ─▶ Leia 2D→3D engine ─▶ CNSDK input ─▶ weaving
+  [SBS]   app ─▶ virtual display 1920x1200 = CNSDK input (split in two, stretched) ──────────▶ weaving
+  [2D]    app ─▶ virtual display 1920x1200 = CNSDK input (one tile, single view, 3D backlight off)
+  touch   ─▶ mapped to display coordinates ─▶ helper ─▶ injectInputEvent(displayId)
   ```
   The 2D-to-3D engine is the device's `com.leiainc.media.service`, loaded with DexClassLoader (`LeiaMediaSDK.java`).
 
